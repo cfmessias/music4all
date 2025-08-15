@@ -289,25 +289,44 @@ def render_spotify_results(token: str):
                     best_by_name[name_key] = a
             all_matched = list(best_by_name.values())
             all_matched.sort(key=lambda x: -((x.get("followers") or {}).get("total") or 0))
+    #-----------------------------------
+    # ---- PAGINAÇÃO ----
+    # mantém per_page=20 definido acima; aqui só fazemos override para género
+    # ---- PAGINAÇÃO (10 por página para todos os casos) ----
+    per_page_local = 10
 
     total_filtered = len(all_matched)
-    total_pages = (total_filtered - 1) // per_page + 1 if total_filtered else 0
+    total_pages = (total_filtered - 1) // per_page_local + 1 if total_filtered else 0
 
-    # 3) Current page
+    # página atual segura + sincronizada em session_state
     page = int(st.session_state.get("page", 1) or 1)
     if total_pages == 0:
         page = 0
-    elif page > total_pages:
-        page = 1
-        st.session_state["page"] = 1
+    else:
+        page = max(1, min(page, total_pages))
+        st.session_state["page"] = page
 
     st.subheader(f"Page {page}/{total_pages}")
 
-    # 4) Page slice
-    start = (page - 1) * per_page
-    end = start + per_page
+    # Prev/Next local (acima da lista) — só quando há várias páginas
+    if total_pages > 1:
+        cprev, cnext = st.columns([0.15, 0.15])
+        with cprev:
+            if st.button("◀ Previous", key="local_prev", disabled=page <= 1, use_container_width=True):
+                st.session_state["page"] = page - 1
+                st.rerun()
+        with cnext:
+            if st.button("Next ▶", key="local_next", disabled=page >= total_pages, use_container_width=True):
+                st.session_state["page"] = page + 1
+                st.rerun()
+
+    # fatia da página
+    start = (page - 1) * per_page_local if total_filtered else 0
+    end = start + per_page_local
     items = all_matched[start:end] if total_filtered else []
 
+
+#----------------------------------------------------
     if not items:
         if genre_only:
             st.info(f'No artists found for genre "{genre_only}".')
