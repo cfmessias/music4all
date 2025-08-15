@@ -149,7 +149,7 @@ def render_spotify_filters(genres=None):
         new_q = st.text_input(
             "Artist",
             key="name_input",
-            placeholder="Type the artist in the search box at the top. You can use * at the start and/or end.",
+            placeholder="Type in the artist. You can use * at the start and/or end.",
             help="Use * at the start and/or end: Genesis (exact), *Genesis (ends with), Genesis* (starts with), *Genesis* (contains).",
         )
         st.selectbox("Genre (Spotify seeds)", options=[""] + genres_list, key="genre_input")
@@ -160,7 +160,7 @@ def render_spotify_filters(genres=None):
             new_q = st.text_input(
                 "Artist",
                 key="name_input",
-                placeholder="Type the artist in the search box at the top. You can use * at the start and/or end.",
+                placeholder="Type in the artist. You can use * at the start and/or end.",
                 help="Use * at the start and/or end: Genesis (exact), *Genesis (ends with), Genesis* (starts with), *Genesis* (contains).",
             )
         with c2:
