@@ -18,13 +18,11 @@ def _compose_query_from_state() -> bool:
     genre_sel = (s.get("genre_input") or "").strip()
 
     if name:
-        parts = [f'artist:"{name}"']
-        g = genre_free or genre_sel
-        if g:
-            parts.append(f'genre:"{g}"')
-        s["query_effective"] = " ".join(parts)
+        # Deixa o wildcard funcionar: passa só o texto do artista
+        s["query_effective"] = name
         s.pop("deep_items", None)
         return True
+
 
     if genre_free or genre_sel:
         s["query_effective"] = f'genre:"{genre_free or genre_sel}"'
@@ -47,14 +45,18 @@ def handle_spotify_search_click():
 
 def handle_spotify_reset_click():
     reset_spotify_filters()
-    # Limpeza explícita do que pode manter resultados antigos visíveis
-    for k in [
-        "query_effective", "query",               # query final + input de artista
-        "genre_input", "genre_free_input",        # géneros (seeds + free text)
-        "page", "page_input", "sp_total_pages",   # paginação
-        "_last_query",
-    ]:
-        st.session_state.pop(k, None)
+
+    # limpar *visualmente* os widgets
+    st.session_state["query"] = ""
+    st.session_state["genre_input"] = ""         # select volta ao primeiro item ("")
+    st.session_state["genre_free_input"] = ""
+
+    # reset de paginação e query efetiva
+    st.session_state["page"] = 1
+    st.session_state["page_input"] = 1
+    st.session_state["sp_total_pages"] = 1
+    st.session_state["_last_query"] = ""
+    st.session_state.pop("query_effective", None)
 
 
 def render_top_action_buttons_spotify():

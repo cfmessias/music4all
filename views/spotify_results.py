@@ -285,17 +285,34 @@ def render_spotify_results(token: str):
         core_q, mode_q = "", "genre"
     else:
         # --- COMBINAÇÃO (artist + genre): interseção por ID ---
+       # --- COMBINAÇÃO (artist + genre): interseção por ID + fallback de substring nos géneros do artista ---
         name_typed   = (st.session_state.get("query") or "").strip()
-        genre_filter = (st.session_state.get("genre_free_input") or st.session_state.get("genre_input") or "").strip()
+        genre_seed   = (st.session_state.get("genre_input") or "").strip()           # da selectbox (seeds)
+        genre_free   = (st.session_state.get("genre_free_input") or "").strip()      # texto livre
+        genre_filter = genre_free or genre_seed
 
         if name_typed and genre_filter:
             # 1) pesquisa por nome (wildcard)
             by_name  = search_artists_wildcard(token, name_typed, max_pages=4) or []
-            # 2) pesquisa por género (seeds ou free text)
+            # 2) pesquisa por género (texto — funciona para seeds e free text)
             by_genre = search_artists_by_genre(token, genre_filter, max_pages=4) or []
-            # 3) interseção por ID
+
             ids = {a.get("id") for a in by_genre if isinstance(a, dict)}
-            all_matched = [a for a in by_name if isinstance(a, dict) and a.get("id") in ids]
+
+            # 3) Fallback: se o género veio da *selectbox* (seed), aceitar artistas cujo 'genres[]' contenha o seed
+            allowed_ids = set(ids)
+            if genre_seed:
+                seed_norm = genre_seed.casefold()
+                for a in by_name:
+                    try:
+                        artist_genres = [g.casefold() for g in (a.get("genres") or [])]
+                    except Exception:
+                        artist_genres = []
+                    if any(seed_norm in g for g in artist_genres):
+                        allowed_ids.add(a.get("id"))
+
+            # 4) Resultado = artistas por nome ∩ (IDs por género OU match-substring)
+            all_matched = [a for a in by_name if isinstance(a, dict) and a.get("id") in allowed_ids]
             core_q, mode_q = _parse_wildcard(name_typed)
         else:
             # comportamento antigo (só artista, ou só género já tratado acima)
@@ -398,59 +415,120 @@ def render_spotify_results(token: str):
 
                 # ⭐ This Is <Artist>
                 with act_thisis:
-                    thisis_key = f"artist_thisis_result_{artist['id']}"
-                    if st.button("⭐ This Is", key=f"btn_thisis_{artist['id']}", help="Find 'This Is <artist>' playlist"):
-                        try:
-                            pl = find_artist_this_is_playlist(
-                                token=token,
-                                artist_name=artist.get("name", ""),
-                                artist_id=artist.get("id"),   # track validation
-                            )
-                        except Exception:
-                            pl = None
-                        st.session_state[thisis_key] = pl if pl else {"type": "none"}
-                        #st.rerun()
+                    thisis_open_key = f"artist_thisis_open_{artist['id']}"
+                    thisis_data_key = f"artist_thisis_result_{artist['id']}"
+                    radio_open_key  = f"artist_radio_open_{artist['id']}"  # para fechar o outro
 
-                    if thisis_key in st.session_state:
-                        _pl = st.session_state[thisis_key]
-                        if _pl and _pl.get("type") == "playlist" and _pl.get("id"):
-                            title = _pl.get("name") or f"This Is {artist.get('name','')}"
-                            if _pl.get("external_url"):
-                                st.markdown(f"[Open “{title}” on Spotify]({_pl['external_url']})")
+                    if st.button("⭐ This Is", key=f"btn_thisis_{artist['id']}", help="Find 'This Is <artist>' playlist"):
+                        if st.session_state.get(thisis_open_key):
+                            # estava aberto → fecha
+                            st.session_state[thisis_open_key] = False
+                        else:
+                            # abre e fecha o Radio
                             try:
-                                embed_spotify("playlist", _pl["id"], height=80)
+                                pl = find_artist_this_is_playlist(
+                                    token=token,
+                                    artist_name=artist.get("name", ""),
+                                    artist_id=artist.get("id"),
+                                )
+                            except Exception:
+                                pl = None
+                            st.session_state[thisis_data_key] = pl if pl else {"type": "none"}
+                            st.session_state[thisis_open_key] = True
+                            st.session_state[radio_open_key] = False
+
+                    # RENDER — só quando está aberto
+                    if st.session_state.get(thisis_open_key):
+                        _pl = st.session_state.get(thisis_data_key)
+                        # fallback defensivo: se não há dados, tenta buscar agora
+                        if _pl is None:
+                            try:
+                                _pl = find_artist_this_is_playlist(
+                                    token=token,
+                                    artist_name=artist.get("name", ""),
+                                    artist_id=artist.get("id"),
+                                )
+                            except Exception:
+                                _pl = {"type": "none"}
+                            st.session_state[thisis_data_key] = _pl
+
+                        # extrair url/id de forma robusta
+                        url = (
+                            (_pl or {}).get("url")
+                            or (_pl or {}).get("external_url")
+                            or ((_pl or {}).get("external_urls") or {}).get("spotify")
+                        )
+                        pname = (_pl or {}).get("name") or f"This Is {artist.get('name','')}"
+                        pid = (_pl or {}).get("id") or (_pl or {}).get("playlist_id")
+
+                        if url:
+                            st.markdown(f'[Open “{pname}” on Spotify]({url})')
+                        if pid:
+                            try:
+                                embed_spotify("playlist", pid, height=80)
                             except Exception:
                                 pass
-                        else:
-                            st.caption("This Is playlist not available")
+                        if not url and not pid:
+                            st.info("No 'This Is' playlist found.")
+                        
+
 
                 # 📻 <Artist> Radio
                 with act_radio:
-                    radio_key = f"artist_radio_result_{artist['id']}"
-                    if st.button("📻 Radio", key=f"btn_radio_{artist['id']}", help="Find '<artist> Radio' playlist"):
-                        try:
-                            pl = find_artist_radio_playlist(
-                                token=token,
-                                artist_name=artist.get("name", ""),
-                                artist_id=artist.get("id"),   # track validation
-                            )
-                        except Exception:
-                            pl = None
-                        st.session_state[radio_key] = pl if pl else {"type": "none"}
-                        #st.rerun()
+                    radio_open_key  = f"artist_radio_open_{artist['id']}"
+                    radio_data_key  = f"artist_radio_result_{artist['id']}"
+                    thisis_open_key = f"artist_thisis_open_{artist['id']}"
 
-                    if radio_key in st.session_state:
-                        _pl = st.session_state[radio_key]
-                        if _pl and _pl.get("type") == "playlist" and _pl.get("id"):
-                            title = _pl.get("name") or f"{artist.get('name','')} Radio"
-                            if _pl.get("external_url"):
-                                st.markdown(f"[Open “{title}” on Spotify]({_pl['external_url']})")
+                    if st.button("📻 Radio", key=f"btn_radio_{artist['id']}", help="Find '<artist> Radio' playlist"):
+                        if st.session_state.get(radio_open_key):
+                            # estava aberto → fecha
+                            st.session_state[radio_open_key] = False
+                        else:
+                            # abre e fecha o This Is
                             try:
-                                embed_spotify("playlist", _pl["id"], height=80)
+                                pl = find_artist_radio_playlist(
+                                    token=token,
+                                    artist_name=artist.get("name", ""),
+                                    artist_id=artist.get("id"),
+                                )
+                            except Exception:
+                                pl = None
+                            st.session_state[radio_data_key] = pl if pl else {"type": "none"}
+                            st.session_state[radio_open_key] = True
+                            st.session_state[thisis_open_key] = False
+
+                    # RENDER — só quando está aberto
+                    if st.session_state.get(radio_open_key):
+                        _pl = st.session_state.get(radio_data_key)
+                        if _pl is None:
+                            try:
+                                _pl = find_artist_radio_playlist(
+                                    token=token,
+                                    artist_name=artist.get("name", ""),
+                                    artist_id=artist.get("id"),
+                                )
+                            except Exception:
+                                _pl = {"type": "none"}
+                            st.session_state[radio_data_key] = _pl
+
+                        url = (
+                            (_pl or {}).get("url")
+                            or (_pl or {}).get("external_url")
+                            or ((_pl or {}).get("external_urls") or {}).get("spotify")
+                        )
+                        pname = (_pl or {}).get("name") or f"{artist.get('name','')} Radio"
+                        pid = (_pl or {}).get("id") or (_pl or {}).get("playlist_id")
+
+                        if url:
+                            st.markdown(f'[Open “{pname}” on Spotify]({url})')
+                        if pid:
+                            try:
+                                embed_spotify("playlist", pid, height=80)
                             except Exception:
                                 pass
-                        else:
-                            st.caption("Radio playlist not available")
+                        if not url and not pid:
+                            st.info("No radio playlist found.")
+
 
             # -------- Column B: image
             with col_b:
