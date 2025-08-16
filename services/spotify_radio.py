@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 from typing import Optional, Dict, List, Tuple
-import unicodedata, re, time, requests
+import unicodedata
+import re
+import time
+import requests
 
 # ================== Cache simples (só acertos) ==================
 _cache: Dict[str, Tuple[float, dict]] = {}
@@ -27,13 +30,13 @@ def _cache_set(key: str, val: dict):
 
 # ================== Utils ==================
 def _norm(s: str) -> str:
+    """Normaliza e REMOVE acentos (útil p/ matching por palavras)."""
     if s is None:
         return ""
-    # NFKD remove acentos para comparação quando necessário
-    return unicodedata.normalize("NFKD", str(s))
+    return unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii")
 
 def _cf(s: str) -> str:
-    # casefold em versão "sem acentos"
+    # casefold sobre a versão sem acentos
     return _norm(s).casefold()
 
 def _word_in_text(word: str, text: str) -> bool:
@@ -61,28 +64,6 @@ def _search_playlists(token: str, q: str, limit: int = 50, offset: int = 0) -> L
         return ((r.json().get("playlists") or {}).get("items") or [])
     except Exception:
         return []
-
-def _get_playlist_details(token: Optional[str], playlist_id: str) -> Optional[Dict]:
-    """Lê meta da playlist (para validações por título/descrição/owner)."""
-    if not token or not playlist_id:
-        return None
-    try:
-        r = requests.get(f"https://api.spotify.com/v1/playlists/{playlist_id}",
-                         headers=_auth_headers(token), timeout=8)
-        if r.status_code != 200:
-            return None
-        j = r.json() or {}
-        owner = j.get("owner") or {}
-        return {
-            "id": j.get("id"),
-            "name": j.get("name") or "",
-            "description": j.get("description") or "",
-            "owner_is_spotify": ((owner.get("id") or "").lower() == "spotify") or (_cf(owner.get("display_name")) == "spotify"),
-            "external_url": (j.get("external_urls") or {}).get("spotify"),
-            "image": ((j.get("images") or [{}])[0] or {}).get("url"),
-        }
-    except Exception:
-        return None
 
 def _playlist_tracks_match_ratio(token: str, playlist_id: str, artist_id: str, max_items: int = 80) -> float:
     """
@@ -149,12 +130,12 @@ def find_artist_this_is_playlist(
     if not token or not artist_name:
         return None
 
-    cache_key = f"thisis::{_cf(artist_name)}::{artist_id or ''}"
+    cache_key = f"thisis.v2::{_cf(artist_name)}::{artist_id or ''}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
-    exact_title_cf = f"this is {artist_name}".casefold()
+    exact_title_cf = f"this is {artist_name}".casefold()  # sensível a acento
     queries = [f"\"This Is {artist_name}\"", f"This Is {artist_name}"]
 
     exact_candidates: List[Dict] = []
@@ -230,7 +211,7 @@ def _validate_radio_title(artist_name: str, title: str, desc: str) -> bool:
     """Tem de mencionar o artista (palavra) e referir 'radio/rádio' no título ou descrição."""
     if _looks_like_unrelated(artist_name, title, desc):
         return False
-    nn = _cf(title); nd = _cf(desc); na = _cf(artist_name)
+    nn = _cf(title); nd = _cf(desc)
     has_artist = _word_in_text(artist_name, title) or _word_in_text(artist_name, desc)
     has_radio = ("radio" in nn) or ("rádio" in nn) or ("radio" in nd) or ("rádio" in nd)
     if not has_artist:
@@ -260,7 +241,7 @@ def find_artist_radio_playlist(
     if not token or not artist_name:
         return None
 
-    cache_key = f"radio::{_cf(artist_name)}::{artist_id or ''}"
+    cache_key = f"radio.v2::{_cf(artist_name)}::{artist_id or ''}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -353,3 +334,7 @@ def find_artist_radio_playlist(
 def find_artist_radio_playlist_legacy(token, artist_name, artist_id=None, market=None, **_):
     # Se houver código antigo que importava a versão legacy, pode chamar isto.
     return find_artist_radio_playlist(token, artist_name, artist_id=artist_id, market=market)
+
+def clear_spotify_radio_cache():
+    """Limpa o cache interno deste módulo (útil após alterações)."""
+    _cache.clear()

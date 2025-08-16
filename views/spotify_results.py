@@ -413,18 +413,20 @@ def render_spotify_results(token: str):
                         except Exception:
                             pass
 
-                # ⭐ This Is <Artist>
-                with act_thisis:
-                    thisis_open_key = f"artist_thisis_open_{artist['id']}"
-                    thisis_data_key = f"artist_thisis_result_{artist['id']}"
-                    radio_open_key  = f"artist_radio_open_{artist['id']}"  # para fechar o outro
+                # estado único por artista: 'thisis' | 'radio' | None
+                open_key        = f"artist_open_panel_{artist['id']}"
+                thisis_data_key = f"artist_thisis_result_{artist['id']}"
+                radio_data_key  = f"artist_radio_result_{artist['id']}"
 
+                # ⭐ This Is
+                with act_thisis:
                     if st.button("⭐ This Is", key=f"btn_thisis_{artist['id']}", help="Find 'This Is <artist>' playlist"):
-                        if st.session_state.get(thisis_open_key):
+                        curr = st.session_state.get(open_key)
+                        if curr == "thisis":
                             # estava aberto → fecha
-                            st.session_state[thisis_open_key] = False
+                            st.session_state[open_key] = None
                         else:
-                            # abre e fecha o Radio
+                            # abre THIS IS e fecha RADIO
                             try:
                                 pl = find_artist_this_is_playlist(
                                     token=token,
@@ -434,13 +436,11 @@ def render_spotify_results(token: str):
                             except Exception:
                                 pl = None
                             st.session_state[thisis_data_key] = pl if pl else {"type": "none"}
-                            st.session_state[thisis_open_key] = True
-                            st.session_state[radio_open_key] = False
+                            st.session_state[open_key] = "thisis"
 
-                    # RENDER — só quando está aberto
-                    if st.session_state.get(thisis_open_key):
+                    # RENDER — só quando THIS IS está aberto
+                    if st.session_state.get(open_key) == "thisis":
                         _pl = st.session_state.get(thisis_data_key)
-                        # fallback defensivo: se não há dados, tenta buscar agora
                         if _pl is None:
                             try:
                                 _pl = find_artist_this_is_playlist(
@@ -452,7 +452,6 @@ def render_spotify_results(token: str):
                                 _pl = {"type": "none"}
                             st.session_state[thisis_data_key] = _pl
 
-                        # extrair url/id de forma robusta
                         url = (
                             (_pl or {}).get("url")
                             or (_pl or {}).get("external_url")
@@ -470,21 +469,16 @@ def render_spotify_results(token: str):
                                 pass
                         if not url and not pid:
                             st.info("No 'This Is' playlist found.")
-                        
-
 
                 # 📻 <Artist> Radio
                 with act_radio:
-                    radio_open_key  = f"artist_radio_open_{artist['id']}"
-                    radio_data_key  = f"artist_radio_result_{artist['id']}"
-                    thisis_open_key = f"artist_thisis_open_{artist['id']}"
-
                     if st.button("📻 Radio", key=f"btn_radio_{artist['id']}", help="Find '<artist> Radio' playlist"):
-                        if st.session_state.get(radio_open_key):
+                        curr = st.session_state.get(open_key)
+                        if curr == "radio":
                             # estava aberto → fecha
-                            st.session_state[radio_open_key] = False
+                            st.session_state[open_key] = None
                         else:
-                            # abre e fecha o This Is
+                            # abre RADIO e fecha THIS IS
                             try:
                                 pl = find_artist_radio_playlist(
                                     token=token,
@@ -494,11 +488,10 @@ def render_spotify_results(token: str):
                             except Exception:
                                 pl = None
                             st.session_state[radio_data_key] = pl if pl else {"type": "none"}
-                            st.session_state[radio_open_key] = True
-                            st.session_state[thisis_open_key] = False
+                            st.session_state[open_key] = "radio"
 
-                    # RENDER — só quando está aberto
-                    if st.session_state.get(radio_open_key):
+                    # RENDER — só quando RADIO está aberto
+                    if st.session_state.get(open_key) == "radio":
                         _pl = st.session_state.get(radio_data_key)
                         if _pl is None:
                             try:
@@ -528,7 +521,6 @@ def render_spotify_results(token: str):
                                 pass
                         if not url and not pid:
                             st.info("No radio playlist found.")
-
 
             # -------- Column B: image
             with col_b:
