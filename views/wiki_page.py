@@ -98,42 +98,37 @@ def render_wikipedia_page(token: str):
 
     st.subheader("📚 Wikipedia styles — CSV list (fast)")
 
-    # ---- Form de pesquisa (Search / Clear) ----
+    # === Botões de topo (como no Spotify): Search / Reset ===
+    b1, b2 = st.columns([0.12, 0.18])
+    with b1:
+        if st.button("🔎 Search", key="wiki_top_search"):
+            # força re-render e volta à primeira página
+            st.session_state["wiki_csv_page"] = 1
+            st.rerun()
+    with b2:
+        if st.button("🧹 Reset filters", key="wiki_top_reset"):
+            for k in ["wiki_csv_style", "wiki_csv_filter", "wiki_csv_page", "wiki_open_name", "wiki_open_url"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    # ---- Inputs simples (sem form), alinhados com Spotify ----
     styles = sorted(df["style"].dropna().astype(str).unique().tolist())
+    c_style, c_filter = st.columns([1, 1])
+    with c_style:
+        st.selectbox(
+            "Style (optional)",
+            options=[""] + styles,
+            index=0,
+            key="wiki_csv_style"
+        )
+    with c_filter:
+        st.text_input(
+            "Filter artists (optional)",
+            key="wiki_csv_filter",
+            placeholder="type a name…"
+        )
 
-    with st.form("wiki_csv_form", clear_on_submit=False):
-        c_style, c_filter = st.columns([1, 1])
-        with c_style:
-            sel_style = st.selectbox(
-                "Style (optional)",
-                options=[""] + styles,
-                index=0,
-                key="wiki_csv_style"
-            )
-        with c_filter:
-            filter_txt = st.text_input(
-                "Filter artists (optional)",
-                key="wiki_csv_filter",
-                placeholder="type a name…"
-            )
-
-        cb1, cb2 = st.columns([1, 1])
-        with cb1:
-            do_search = st.form_submit_button("Search")
-        with cb2:
-            do_reset = st.form_submit_button("Clear")
-
-    # Ações dos botões
-    if do_reset:
-        for k in ["wiki_csv_style", "wiki_csv_filter", "wiki_csv_page", "wiki_csv_ps", "wiki_open_name", "wiki_open_url"]:
-            st.session_state.pop(k, None)
-        st.rerun()
-
-    if do_search:
-        # reset pag quando há nova pesquisa
-        st.session_state["wiki_csv_page"] = 1
-
-    # Lê os valores atuais (após form)
+    # Valores atuais
     sel_style = st.session_state.get("wiki_csv_style", "")
     filter_txt = st.session_state.get("wiki_csv_filter", "")
 
@@ -148,52 +143,56 @@ def render_wikipedia_page(token: str):
     if filter_txt:
         sub = sub[sub["name"].str.contains(str(filter_txt), case=False, na=False)]
 
-    # 3) Deduplicação quando a pesquisa é SÓ por artista (sem estilo selecionado)
-    #    Ignora a coluna 'style' e faz distinct pelas restantes (name, wiki_url).
-    if filter_txt and not sel_style:
-        sub = sub.drop_duplicates(subset=["name", "wiki_url"], keep="first")
+    # 3) Deduplicação condicional (Nome + URL)
+    #    • Dedup quando: (a) há pesquisa por artista  OU  (b) não há filtros (sem artista e sem estilo)
+    has_artist = bool((filter_txt or "").strip())
+    has_style  = bool(sel_style)
+    do_dedup   = has_artist or (not has_artist and not has_style)
+    if do_dedup and not sub.empty:
+        sub["_n"] = sub["name"].astype(str).str.casefold().str.strip()
+        sub["_u"] = sub["wiki_url"].astype(str).str.casefold().str.strip()
+        sub = sub.drop_duplicates(subset=["_n", "_u"], keep="first").drop(columns=["_n", "_u"])
 
     # Ordenação por nome
     sub.sort_values("name", inplace=True)
 
-    # ---- Paginação (Page + Page size)
-    default_ps = int(st.session_state.get("ui_wiki_page_size", 20))
-    options = [20, 50, 100]
-    try:
-        default_index = options.index(default_ps)
-    except ValueError:
-        default_index = 0
-
-    c_page, c_ps = st.columns([1, 1])
-    with c_page:
-        page_num = st.number_input(
-            "Page",
-            min_value=1,
-            value=int(st.session_state.get("wiki_csv_page", 1)),
-            key="wiki_csv_page",
-        )
-    with c_ps:
-        page_size = st.selectbox("Page size", options, index=default_index, key="wiki_csv_ps")
-
+    # ---- Paginação estilo Spotify (fixo: 10 por página)
+    page_size = 10
     total = len(sub)
     total_pages = (total - 1) // page_size + 1 if total else 1
-    if page_num > total_pages:
-        page_num = total_pages
-        st.session_state["wiki_csv_page"] = total_pages
+
+    # reset quando mudam os filtros (antes de instanciar botões)
+    if st.session_state.get("_wiki_last_filter") != (filter_txt, sel_style):
+        st.session_state["_wiki_last_filter"] = (filter_txt, sel_style)
+        st.session_state["wiki_csv_page"] = 1
+
+    # página atual (em state)
+    page = int(st.session_state.get("wiki_csv_page", 1) or 1)
+    page = max(1, min(page, total_pages))
+
+    # barra de navegação:  Pag: N  |  ◀ Previous  |  Next ▶
+    cpage, cprev, cnext = st.columns([0.20, 0.14, 0.14])
+    with cpage:
+        st.markdown(
+            f"<div style='height:38px;display:flex;align-items:center;'>"
+            f"<strong>Pag:</strong>&nbsp;{page}/{total_pages}</div>",
+            unsafe_allow_html=True,
+        )
+
+    def _wiki_goto(delta: int):
+        p = int(st.session_state.get("wiki_csv_page", 1) or 1)
+        st.session_state["wiki_csv_page"] = max(1, min(total_pages, p + delta))
+
+
+    with cprev:
+        st.button("◀ Previous", key="wiki_csv_prev", on_click=_wiki_goto, kwargs={"delta": -1}, use_container_width=True)
+    with cnext:
+        st.button("Next ▶", key="wiki_csv_next", on_click=_wiki_goto, kwargs={"delta": +1}, use_container_width=True)
 
     st.caption(f"{total} artists • {total_pages} pages")
 
-    bp1, bp2 = st.columns(2)
-    with bp1:
-        if st.button("◀ Prev", key="wiki_csv_prev"):
-            st.session_state["wiki_csv_page"] = max(1, int(st.session_state.get("wiki_csv_page", 1)) - 1)
-            st.rerun()
-    with bp2:
-        if st.button("Next ▶", key="wiki_csv_next"):
-            st.session_state["wiki_csv_page"] = min(total_pages, int(st.session_state.get("wiki_csv_page", 1)) + 1)
-            st.rerun()
-
-    start = (int(page_num) - 1) * page_size
+    # Slice da página
+    start = (page - 1) * page_size
     end = start + page_size
     view = sub.iloc[start:end]
 

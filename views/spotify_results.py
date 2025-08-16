@@ -259,8 +259,19 @@ def render_spotify_results(token: str):
     """
     mobile = ui_mobile()
 
+    # --- Guard: se TODOS os inputs estão vazios, limpa qualquer query “antiga” ---
+    no_artist = not (st.session_state.get("query") or "").strip()
+    no_seed   = not (st.session_state.get("genre_input") or "").strip()
+    no_free   = not (st.session_state.get("genre_free_input") or "").strip()
+    if no_artist and no_seed and no_free:
+        st.session_state.pop("query_effective", None)
+
+    # 1) Query (prioriza query_effective para não “sujar” o campo Artist)
+    raw_q = (st.session_state.get("query_effective") or _extract_user_query())
+    if not raw_q:
+        return
     # 1) Query from top search box (no fallback input here)
-    raw_q = _extract_user_query()
+    raw_q = (st.session_state.get("query_effective") or _extract_user_query())
     if not raw_q:
         # st.info("Type the artist in the search box at the top. You can use * at the start and/or end.")
         return
@@ -270,13 +281,28 @@ def render_spotify_results(token: str):
     # 2) Search
     per_page = 20
     if genre_only:
-        all_matched = search_artists_by_genre(token, genre_only, max_pages=4) or []
+        all_matched = search_artists_by_genre(token, genre_only, max_pages=20) or []
         core_q, mode_q = "", "genre"
     else:
-        all_matched = search_artists_wildcard(token, raw_q, max_pages=4) or []
-        core_q, mode_q = _parse_wildcard(raw_q)
+        # --- COMBINAÇÃO (artist + genre): interseção por ID ---
+        name_typed   = (st.session_state.get("query") or "").strip()
+        genre_filter = (st.session_state.get("genre_free_input") or st.session_state.get("genre_input") or "").strip()
 
-        # Optional homonym collapse (exact mode only)
+        if name_typed and genre_filter:
+            # 1) pesquisa por nome (wildcard)
+            by_name  = search_artists_wildcard(token, name_typed, max_pages=4) or []
+            # 2) pesquisa por género (seeds ou free text)
+            by_genre = search_artists_by_genre(token, genre_filter, max_pages=4) or []
+            # 3) interseção por ID
+            ids = {a.get("id") for a in by_genre if isinstance(a, dict)}
+            all_matched = [a for a in by_name if isinstance(a, dict) and a.get("id") in ids]
+            core_q, mode_q = _parse_wildcard(name_typed)
+        else:
+            # comportamento antigo (só artista, ou só género já tratado acima)
+            all_matched = search_artists_wildcard(token, raw_q, max_pages=4) or []
+            core_q, mode_q = _parse_wildcard(raw_q)
+
+        # colapso de homónimos (exact) → escolhe o mais seguido
         if mode_q == "exact" and all_matched:
             best_by_name = {}
             for a in all_matched:
@@ -289,41 +315,36 @@ def render_spotify_results(token: str):
                     best_by_name[name_key] = a
             all_matched = list(best_by_name.values())
             all_matched.sort(key=lambda x: -((x.get("followers") or {}).get("total") or 0))
-    #-----------------------------------
+ #-----------------------------------
     # ---- PAGINAÇÃO ----
     # mantém per_page=20 definido acima; aqui só fazemos override para género
     # ---- PAGINAÇÃO (10 por página para todos os casos) ----
+    all_matched.sort(key=lambda a: -((a.get("followers") or {}).get("total") or 0))
     per_page_local = 10
 
-    total_filtered = len(all_matched)
-    total_pages = (total_filtered - 1) // per_page_local + 1 if total_filtered else 0
+        # ... (o teu código constrói all_matched aqui em cima)
 
-    # página atual segura + sincronizada em session_state
+    # ---- Paginação (o cabeçalho “Pag: N/M | Prev | Next” vem do spotify_ui.render_pagination_controls) ----
+    total_filtered = len(all_matched)
+    total_pages = (total_filtered - 1) // per_page + 1 if total_filtered else 0
+
     page = int(st.session_state.get("page", 1) or 1)
     if total_pages == 0:
         page = 0
     else:
         page = max(1, min(page, total_pages))
-        st.session_state["page"] = page
 
-    st.subheader(f"Page {page}/{total_pages}")
-
-    # Prev/Next local (acima da lista) — só quando há várias páginas
-    if total_pages > 1:
-        cprev, cnext = st.columns([0.15, 0.15])
-        with cprev:
-            if st.button("◀ Previous", key="local_prev", disabled=page <= 1, use_container_width=True):
-                st.session_state["page"] = page - 1
-                st.rerun()
-        with cnext:
-            if st.button("Next ▶", key="local_next", disabled=page >= total_pages, use_container_width=True):
-                st.session_state["page"] = page + 1
-                st.rerun()
+    # sincroniza com o UI e expõe o total
+    st.session_state["page"] = page
+    st.session_state["page_input"] = page
+    st.session_state["sp_total_pages"] = max(total_pages, 1)
 
     # fatia da página
-    start = (page - 1) * per_page_local if total_filtered else 0
-    end = start + per_page_local
+    start = (page - 1) * per_page if total_filtered else 0
+    end = start + per_page
     items = all_matched[start:end] if total_filtered else []
+
+    
 
 
 #----------------------------------------------------
@@ -368,7 +389,7 @@ def render_spotify_results(token: str):
                     embed_key = f"artist_{artist['id']}_embed"
                     if st.button("▶", key=f"btn_{artist['id']}_embed", help="Embed artist player"):
                         st.session_state[embed_key] = True
-                        st.rerun()
+                        #st.rerun()
                     if st.session_state.get(embed_key):
                         try:
                             embed_spotify("artist", artist["id"], height=80)
@@ -388,7 +409,7 @@ def render_spotify_results(token: str):
                         except Exception:
                             pl = None
                         st.session_state[thisis_key] = pl if pl else {"type": "none"}
-                        st.rerun()
+                        #st.rerun()
 
                     if thisis_key in st.session_state:
                         _pl = st.session_state[thisis_key]
@@ -416,7 +437,7 @@ def render_spotify_results(token: str):
                         except Exception:
                             pl = None
                         st.session_state[radio_key] = pl if pl else {"type": "none"}
-                        st.rerun()
+                        #st.rerun()
 
                     if radio_key in st.session_state:
                         _pl = st.session_state[radio_key]
@@ -483,7 +504,7 @@ def render_spotify_results(token: str):
                             compilations, key=lambda x: x.get("release_date", ""), reverse=True
                         )[:20],
                     }
-                    st.rerun()
+                    #st.rerun()
 
             with calist:
                 if st.session_state.get("open_albums_for") == artist["id"]:
@@ -552,7 +573,7 @@ def render_spotify_results(token: str):
                                 f"selected_album_id_{artist['id']}",
                             ]:
                                 st.session_state.pop(k, None)
-                            st.rerun()
+                            #st.rerun()
 
                     
                     

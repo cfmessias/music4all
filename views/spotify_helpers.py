@@ -34,8 +34,9 @@ def reset_spotify_filters():
     for k in ("spotify_csv_page", "spotify_csv_ps"):
         s.pop(k, None)
 
-    # rerun compatível com versões antigas/novas do Streamlit
-    try:
-        st.rerun()
-    except AttributeError:
-        st.experimental_rerun()
+    # # rerun compatível com versões antigas/novas do Streamlit
+    # try:
+    #     st.rerun()
+    # except AttributeError:
+    #     st.experimental_rerun()
+    return True

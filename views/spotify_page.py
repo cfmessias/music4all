@@ -3,34 +3,38 @@ import streamlit as st
 
 # módulos existentes do teu projeto
 from services.spotify import load_genres_csv
-from services.spotify_genres import fetch_spotify_genre_seeds  # novo ficheiro
-from .spotify_ui import render_spotify_filters
+from services.spotify_genres import fetch_spotify_genre_seeds  # se tiveres este helper
+from .spotify_ui import (
+    render_spotify_filters,
+    render_top_action_buttons_spotify,
+    render_pagination_controls,   # <-- adicionámos esta importação
+)
 from .spotify_results import render_spotify_results
-from .spotify_ui import render_spotify_filters, render_top_action_buttons_spotify
-from .spotify_results import render_spotify_results
+
 
 def render_spotify_page(token: str, client_id: str, client_secret: str):
     """
-    Página Spotify (assinatura mantida).
+    Página Spotify.
     - Pré-carrega lista de géneros (Spotify API; fallback CSV) e guarda em st.session_state['genres_list'].
     - Desenha os filtros (que usam 'genres_list' no selectbox).
+    - Mostra barra de paginação (Pag: N/M | Prev | Next) na mesma linha, estilo wiki.
     - Renderiza os resultados conforme st.session_state['query'].
     """
     st.subheader("🎧 Spotify")
-    render_top_action_buttons_spotify()  # <- aparecem ao lado do título
+    render_top_action_buttons_spotify()  # botões pequenos ao lado do título
 
-
-    # 1) tentar buscar géneros diretamente à API do Spotify (recomendado)
-    # 2) fallback para o CSV local (load_genres_csv) — mantém compatibilidade
-    # 3) se tudo falhar, fica lista vazia (selectbox mostra opção vazia)
-    spotify_genres = fetch_spotify_genre_seeds(token) or (load_genres_csv() or [])
+    # 1) tentar buscar géneros à API do Spotify (se não tiveres, comenta a linha seguinte)
+    try:
+        spotify_genres = fetch_spotify_genre_seeds(token) or (load_genres_csv() or [])
+    except Exception:
+        spotify_genres = load_genres_csv() or []
     st.session_state["genres_list"] = spotify_genres
 
-    # Ajuda rápida (podes comentar)
-    # st.caption(f"Loaded {len(spotify_genres)} genres")
+    # 2) filtros (usa a lista acima)
+    render_spotify_filters(genres=spotify_genres)
 
-    # Render dos filtros (atualiza st.session_state['query'] ao carregar em Search)
-    render_spotify_filters()
+    # 3) paginação na MESMA linha (Pag: N/M | ◀ Previous | Next ▶)
+    render_pagination_controls()
 
-    # Resultados (usa token para chamadas à API)
+    # 4) resultados
     render_spotify_results(token)
