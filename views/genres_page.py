@@ -25,16 +25,8 @@ def _render_spotify_artist_list(artists: list[dict], play_prefix: str):
         with cmain:
             st.markdown(f"**{a.get('name','—')}**")
             st.caption(f"Followers: {a.get('followers','—')} • Popularity: {a.get('popularity','—')}")
-        # with cact:
-        #     if a.get("url"): st.markdown(f"[Open in Spotify]({a['url']})")
-        #     btn_key   = _key(f"{play_prefix}_btn",   [a.get('id') or str(idx)])
-        #     state_key = _key(f"{play_prefix}_played",[a.get('id') or str(idx)])
-        #     if st.button("▶", key=btn_key, help="Embed player"):
-        #         st.session_state[state_key] = True; st.rerun()
-        #     if st.session_state.get(state_key):
-        #         embed_spotify(a["type"], a["id"], height=80)
+
         with cact:
-            # duas ações lado a lado: ▶ (embed artista) e 📻 (Artist Radio)
             a1, a2 = st.columns([1, 1])
 
             # ▶ tocar/embutir o artista
@@ -42,7 +34,6 @@ def _render_spotify_artist_list(artists: list[dict], play_prefix: str):
                 state_key = f"{play_prefix}_artist_{idx}_embed"
                 if st.button("▶", key=f"{play_prefix}_art_btn_{idx}", help="Embed artist player"):
                     st.session_state[state_key] = True
-                    st.rerun()
                 if st.session_state.get(state_key):
                     _id = (a or {}).get("id", "")
                     if _id:
@@ -59,21 +50,18 @@ def _render_spotify_artist_list(artists: list[dict], play_prefix: str):
                     except Exception:
                         pl = None
                     if pl and pl.get("id"):
-                        st.session_state[radio_state] = pl  # guardar o objeto para mostrar link + embed
+                        st.session_state[radio_state] = pl
                     else:
-                        st.session_state[radio_state] = {"id": "", "external_url": ""}  # marcou que tentou
-                    st.rerun()
+                        st.session_state[radio_state] = {"id": "", "external_url": ""}
 
-                # se já encontrámos, mostrar link e/ou embed
                 _pl = st.session_state.get(radio_state) or {}
                 if _pl.get("id"):
-                    # Link para abrir no Spotify
                     if _pl.get("external_url"):
                         st.markdown(f"[Open radio in Spotify]({_pl['external_url']})")
-                    # Embed da playlist
                     embed_spotify("playlist", _pl["id"], height=80)
                 elif _pl != {} and not _pl.get("id"):
                     st.caption("Radio not available")
+
 
 def _render_spotify_playlist_list(playlists: list[dict], play_prefix: str):
     if not playlists:
@@ -91,9 +79,10 @@ def _render_spotify_playlist_list(playlists: list[dict], play_prefix: str):
             btn_key   = _key(f"{play_prefix}_pl_btn",   [p.get('id') or str(idx)])
             state_key = _key(f"{play_prefix}_pl_played",[p.get('id') or str(idx)])
             if st.button("▶", key=btn_key, help="Embed playlist"):
-                st.session_state[state_key] = True; st.rerun()
+                st.session_state[state_key] = True
             if st.session_state.get(state_key):
                 embed_spotify("playlist", p["id"], height=380)
+
 
 # -------------------------------------------------
 # Helpers de pesquisa
@@ -108,10 +97,7 @@ def _flatten_all_paths(df):
       - paths: list[tuple[str,...]] (sem duplicados)
       - url_by_path: dict[path_tuple] -> url (quando este path é folha nalgum registo)
     """
-    # Reusa a construção do índice para apanhar mapeamento de URLs por path
     children, leaves, roots, leaf_url = build_indices(df)
-
-    # Conjunto de paths únicos
     paths_set = set()
 
     level_cols = [c for c in df.columns if c.startswith("H")]
@@ -121,33 +107,26 @@ def _flatten_all_paths(df):
         levels = [norm(r.get(c, "")) for c in level_cols]
         levels = [x for x in levels if x]
 
-        # adicionar todos os prefixos de H*
         for i in range(1, len(levels) + 1):
             p = tuple(levels[:i])
             if p:
                 paths_set.add(p)
 
-        # se Texto existir, considera-o como path terminal adicional
         txt = norm(r.get("Texto", ""))
         if txt:
             full = tuple(levels + [txt]) if levels and levels[-1] != txt else tuple(levels)
             if full:
                 paths_set.add(full)
 
-    # Ordenação amigável (alfabética por join de "/")
     paths = sorted(paths_set, key=lambda t: " / ".join(t).lower())
-
     return paths, leaf_url
 
+
 def _normlower(s: str) -> str:
-    # normaliza + baixa (sem acentos; já vem “limpo” via norm).
     return norm(s).lower()
 
+
 def _search_paths(paths, query: str, max_results: int = 200):
-    """
-    Procura query (case/acentos-insensitive) em QUALQUER segmento do path.
-    Retorna lista de paths (tuples).
-    """
     q = _normlower(query)
     if not q:
         return []
@@ -160,17 +139,19 @@ def _search_paths(paths, query: str, max_results: int = 200):
                 break
     return out
 
+
 # -------------------------------------------------
-# Página (forçada a “mobile layout”)
+# Página
 # -------------------------------------------------
 def render_generos_page():
     st.subheader("🧭 Genre hierarchy")
-    
+
     try:
         df, used_path = load_hierarchy_csv()
 
-        # --- Top action buttons (small, uniform with Spotify) ---
+        # --- Top action buttons ---
         top_btn_1, top_btn_2 = st.columns([0.12, 0.18])
+
         with top_btn_1:
             if st.button("🔎 Search", key="genres_top_search"):
                 q = (st.session_state.get("genres_search_q") or "").strip()
@@ -180,12 +161,21 @@ def render_generos_page():
                     all_paths, url_by_path = _flatten_all_paths(df)
                     hits = _search_paths(all_paths, q, max_results=300)
                     st.session_state["genres_search_results"] = {"query": q, "hits": hits}
-                    st.rerun()
+                    st.session_state["genres_search_page"] = 1  # começa na 1.ª página
+
         with top_btn_2:
             if st.button("🧹 Reset filters", key="genres_top_reset"):
-                st.session_state.pop("genres_search_q", None)
+                # limpa input e resultados/paginação
+                st.session_state["genres_search_q"] = ""
                 st.session_state.pop("genres_search_results", None)
-                st.rerun()
+                st.session_state.pop("genres_search_page", None)
+                # volta à raiz da hierarquia
+                st.session_state["genres_path"] = []
+                # apaga quaisquer resíduos antigos
+                for k in list(st.session_state.keys()):
+                    if k.endswith(("_artists", "_playlists")) or k.startswith(("sr_spotify", "list_spotify")):
+                        st.session_state.pop(k, None)
+
     except Exception as e:
         st.error(str(e)); return
 
@@ -197,10 +187,8 @@ def render_generos_page():
     path = st.session_state["genres_path"]
     prefix = tuple(path)
 
-    #st.caption(f"Loaded from: `{used_path}`")
-
     # ---------------------------
-    # PESQUISA (novo bloco)
+    # PESQUISA
     # ---------------------------
     st.text_input("Search genres/styles", key="genres_search_q", placeholder="e.g., art rock")
 
@@ -213,206 +201,137 @@ def render_generos_page():
         if not hits:
             st.info("No matches.")
         else:
-            # Mostra até 50 por página simples
+            # paginação simples
             page = int(st.session_state.get("genres_search_page", 1))
             page_size = 50
             total_pages = (len(hits) - 1) // page_size + 1
             top, _p, _n = st.columns([6, 2, 2])
             with _p:
                 if st.button("◀ Prev", key="genres_search_prev") and page > 1:
-                    st.session_state["genres_search_page"] = page - 1; st.rerun()
+                    st.session_state["genres_search_page"] = page - 1
             with _n:
                 if st.button("Next ▶", key="genres_search_next") and page < total_pages:
-                    st.session_state["genres_search_page"] = page + 1; st.rerun()
+                    st.session_state["genres_search_page"] = page + 1
             st.caption(f"Page {page}/{total_pages}")
 
             start = (page - 1) * page_size
             chunk = hits[start : start + page_size]
 
             for idx, p in enumerate(chunk):
-                # linha de resultado: label (breadcrumb), ícones (wiki + 🎧), botão “Go”
                 label = " / ".join(p)
-                row = st.columns([6, 2, 1, 1])  # label | wiki | 🎧 | go
+                row = st.columns([6, 2, 1])     # label | wiki | Go
+
+                # label
                 with row[0]:
                     st.markdown(f"`{label}`")
+
+                # wiki (se existir)
                 with row[1]:
                     url = leaf_url.get(tuple(p))
                     if url:
                         st.markdown(f"[🔗]({url})", help="Wikipedia")
                     else:
                         st.caption(" ")
+
+                # Go → faz lookup Spotify (comportamento antigo do 🎧)
                 with row[2]:
-                    bkey = _key("sr_spotify", p, idx=idx)
-                    if st.button("🎧", key=bkey, help="List Spotify artists/playlists for this path"):
+                    gkey = _key("sr_go", p, idx=idx)
+                    if st.button(
+                        "Go",
+                        key=gkey,
+                        use_container_width=True,
+                        help="List Spotify artists/playlists for this path",
+                    ):
                         token = get_spotify_token_cached()
                         if not token:
-                            st.warning("No Spotify token available.")
+                            st.warning("No Spotify token disponível.")
                         else:
-                            # leaf é o último segmento desse path
+                            # Fecha qualquer outro bloco aberto desta área (pesquisa)
+                            for k in list(st.session_state.keys()):
+                                if k.startswith("sr_spotify"):
+                                    st.session_state.pop(k, None)
+
                             leaf = p[-1] if p else ""
                             ctx = build_context_keywords(list(p), leaf)
+
                             artists = spotify_genre_top_artists(token, ctx[0], ctx, limit=10)
                             playlists = spotify_genre_playlists(token, ctx[0], ctx, limit=10) if not artists else []
-                            st.session_state[f"{bkey}_artists"] = artists
-                            st.session_state[f"{bkey}_playlists"] = playlists
-                            st.rerun()
-                    # mostrar resultados (se já houver) logo abaixo
-                    artists = st.session_state.get(f"{_key('sr_spotify', p, idx=idx)}_artists")
-                    playlists = st.session_state.get(f"{_key('sr_spotify', p, idx=idx)}_playlists")
-                    if artists is not None or playlists is not None:
-                        if artists:
-                            st.markdown("**Artists**")
-                            _render_spotify_artist_list(artists, play_prefix=f"{_key('sr_spotify', p, idx=idx)}_art")
-                        elif playlists:
-                            st.markdown("**Playlists**")
-                            _render_spotify_playlist_list(playlists, play_prefix=f"{_key('sr_spotify', p, idx=idx)}_pl")
-                        else:
-                            st.caption("sem informação")
-                with row[3]:
-                    gkey = _key("sr_go", p, idx=idx)
-                    if st.button("Go", key=gkey, use_container_width=True):
-                        st.session_state["genres_path"] = list(p)
-                        # opcional: manter resultados visíveis; se quiseres limpar:
-                        # st.session_state.pop("genres_search_results", None)
-                        st.rerun()
+
+                            base = _key("sr_spotify", p, idx=idx)
+                            st.session_state[f"{base}_artists"] = artists
+                            st.session_state[f"{base}_playlists"] = playlists
+
+
+                # render dos resultados logo abaixo deste item (se já houver)
+                base = _key("sr_spotify", p, idx=idx)
+                artists   = st.session_state.get(f"{base}_artists")
+                playlists = st.session_state.get(f"{base}_playlists")
+                if artists is not None or playlists is not None:
+                    if artists:
+                        st.markdown("**Artists**")
+                        _render_spotify_artist_list(artists, play_prefix=f"{base}_art")
+                    elif playlists:
+                        st.markdown("**Playlists**")
+                        _render_spotify_playlist_list(playlists, play_prefix=f"{base}_pl")
+                    else:
+                        st.caption("sem informação")
 
         st.divider()
+        return
 
     # ---------------------------
     # Navegação normal por ramos
     # ---------------------------
-    # breadcrumbs (uma linha de botões)
+    # breadcrumbs
     bc_cols = st.columns(max(len(path), 1) + 1)
     with bc_cols[0]:
         if st.button("🏠 Home", use_container_width=True, key=_key("home", [])):
-            st.session_state["genres_path"] = []; st.rerun()
+            st.session_state["genres_path"] = []
     for i, label in enumerate(path, start=1):
         with bc_cols[i]:
             if st.button(f"{label} ⤴", use_container_width=True, key=_key("bc", path[:i])):
-                st.session_state["genres_path"] = path[:i]; st.rerun()
+                st.session_state["genres_path"] = path[:i]
 
-    # Se o próprio nó atual tiver página wiki (folha nalguma linha), mostra links e 🎧
+    # Se o próprio nó atual tiver página wiki (folha nalguma linha), mostra link
     cur_url = leaf_url.get(prefix)
     if cur_url:
-        row = st.columns([7, 3])  # texto | ícones
+        row = st.columns([7, 3])  # texto | link
         with row[0]:
             st.markdown(f"**This node has a Wikipedia page:** [🔗]({cur_url})")
         with row[1]:
-            csp1, csp2 = st.columns(2)
-            with csp1:
-                st.markdown(f"[🔗]({cur_url})", help="Wikipedia")
-            with csp2:
-                btn_key = _key("list_spotify_cur", path)
-                if st.button("🎧", key=btn_key, help="List Spotify artists/playlists (this node)"):
-                    token = get_spotify_token_cached()
-                    if not token:
-                        st.warning("No Spotify token available.")
-                    else:
-                        ctx = build_context_keywords(path, path[-1] if path else "")
-                        artists = spotify_genre_top_artists(token, ctx[0], ctx, limit=10)
-                        playlists = spotify_genre_playlists(token, ctx[0], ctx, limit=10) if not artists else []
-                        st.session_state[f"{btn_key}_artists"] = artists
-                        st.session_state[f"{btn_key}_playlists"] = playlists
-                        st.rerun()
-
-        # render resultados do nó atual
-        artists = st.session_state.get(f"{_key('list_spotify_cur', path)}_artists")
-        playlists = st.session_state.get(f"{_key('list_spotify_cur', path)}_playlists")
-        if artists is not None or playlists is not None:
-            if artists:
-                st.markdown("**Artists**")
-                _render_spotify_artist_list(artists, play_prefix=f"{_key('list_spotify_cur', path)}_art")
-            elif playlists:
-                st.markdown("**Playlists**")
-                _render_spotify_playlist_list(playlists, play_prefix=f"{_key('list_spotify_cur', path)}_pl")
-            else:
-                st.caption("sem informação")
+            st.markdown(f"[🔗]({cur_url})", help="Wikipedia")
 
     st.markdown("### Current branch")
 
-    # próximos ramos (lista de botões com ícones ao lado)
+    # próximos ramos
     next_children = sorted(x for x in children.get(prefix, set()) if norm(x))
     if next_children:
         st.write("Select a branch to drill down:")
         for idx, label in enumerate(next_children):
             child_path = path + [label]
-            row = st.columns([7, 3])  # nome | ícones
+            row = st.columns([7, 1])  # nome | wiki
             with row[0]:
                 if st.button(label, key=_key("branch", child_path, idx=idx), use_container_width=True):
-                    st.session_state["genres_path"] = list(child_path); st.rerun()
+                    st.session_state["genres_path"] = list(child_path)
             with row[1]:
-                c1, c2 = st.columns(2)
-                with c1:
-                    url = leaf_url.get(tuple(child_path))
-                    if url: st.markdown(f"[🔗]({url})", help="Wikipedia")
-                    else:   st.caption(" ")
-                with c2:
-                    bkey = _key("list_spotify_row", child_path, idx=idx)
-                    if st.button("🎧", key=bkey, help="List Spotify artists/playlists"):
-                        token = get_spotify_token_cached()
-                        if not token:
-                            st.warning("No Spotify token available.")
-                        else:
-                            ctx = build_context_keywords(child_path, label)
-                            artists = spotify_genre_top_artists(token, ctx[0], ctx, limit=10)
-                            playlists = spotify_genre_playlists(token, ctx[0], ctx, limit=10) if not artists else []
-                            st.session_state[f"{bkey}_artists"] = artists
-                            st.session_state[f"{bkey}_playlists"] = playlists
-                            st.rerun()
-            # render resultados do child (se existirem)
-            artists = st.session_state.get(f"{_key('list_spotify_row', child_path, idx=idx)}_artists")
-            playlists = st.session_state.get(f"{_key('list_spotify_row', child_path, idx=idx)}_playlists")
-            if artists is not None or playlists is not None:
-                if artists:
-                    st.markdown("**Artists**")
-                    _render_spotify_artist_list(artists, play_prefix=f"{_key('list_spotify_row', child_path, idx=idx)}_art")
-                elif playlists:
-                    st.markdown("**Playlists**")
-                    _render_spotify_playlist_list(playlists, play_prefix=f"{_key('list_spotify_row', child_path, idx=idx)}_pl")
-                else:
-                    st.caption("sem informação")
-
+                url = leaf_url.get(tuple(child_path))
+                if url: st.markdown(f"[🔗]({url})", help="Wikipedia")
+                else:   st.caption(" ")
     else:
-        # nó terminal → folhas (Texto + URL) + Spotify
+        # nó terminal → folhas (Texto + URL)
         rows = leaves.get(prefix, [])
         if rows:
             st.write("Leaves in this branch:")
             for idx, (txt, url, p) in enumerate(rows[:1000]):
-                row = st.columns([7, 3])
+                row = st.columns([7, 1])
                 with row[0]:
                     st.markdown(f"**{txt}**  \n`{' / '.join(p)}`")
                 with row[1]:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if url: st.markdown(f"[Wikipedia]({url})")
-                        else:   st.caption("—")
-                    with c2:
-                        bkey = _key("list_spotify_leaf", p, idx=idx, extra=txt)
-                        if st.button("🎧", key=bkey, help="List Spotify artists/playlists"):
-                            token = get_spotify_token_cached()
-                            if not token:
-                                st.warning("No Spotify token available.")
-                            else:
-                                ctx = build_context_keywords(p, txt)
-                                artists = spotify_genre_top_artists(token, ctx[0], ctx, limit=10)
-                                playlists = spotify_genre_playlists(token, ctx[0], ctx, limit=10) if not artists else []
-                                st.session_state[f"{bkey}_artists"] = artists
-                                st.session_state[f"{bkey}_playlists"] = playlists
-                                st.rerun()
-                # render resultados da leaf
-                artists = st.session_state.get(f"{_key('list_spotify_leaf', p, idx=idx, extra=txt)}_artists")
-                playlists = st.session_state.get(f"{_key('list_spotify_leaf', p, idx=idx, extra=txt)}_playlists")
-                if artists is not None or playlists is not None:
-                    if artists:
-                        st.markdown("**Artists**")
-                        _render_spotify_artist_list(artists, play_prefix=f"{_key('list_spotify_leaf', p, idx=idx, extra=txt)}_art")
-                    elif playlists:
-                        st.markdown("**Playlists**")
-                        _render_spotify_playlist_list(playlists, play_prefix=f"{_key('list_spotify_leaf', p, idx=idx, extra=txt)}_pl")
-                    else:
-                        st.caption("sem informação")
+                    if url: st.markdown(f"[Wikipedia]({url})")
+                    else:   st.caption("—")
         else:
             st.info("No leaves under this node.")
+
 
 # ----- Alias para compatibilidade -----
 def render_genres_page():

@@ -1,7 +1,7 @@
 # app.py — Music4all (views/ structure)
 import os
 import streamlit as st
-
+from views.influence_map import render_influence_map_page
 from services.spotify import get_spotify_token
 from views.spotify_page import render_spotify_page
 from views.wiki_page import render_wikipedia_page
@@ -48,7 +48,8 @@ if not TOKEN:
 # ---------------------------
 #  Top nav (radio horizontal)
 # ---------------------------
-base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', '🎶 Playlists']
+# Lista de tabs (pode ser alterada dependendo do modo de desenvolvimento)
+base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', '🎶 Playlists', '🗺️ Influence map', '🧩 Genre map']
 tabs = base_tabs + ['📻 Radio (debug)'] if DEV_DEBUG else base_tabs
 
 # garantir um valor inicial coerente
@@ -84,10 +85,17 @@ elif active_tab == '📚 Wikipedia':
 elif active_tab == '🧭 Genres':
     render_genres_page()
 
+elif active_tab == '🗺️ Influence map':
+    render_influence_map_page()
+
+elif active_tab == '🧩 Genre map':
+    from views.genre_map_auto import render_genre_map_page
+    render_genre_map_page()
+
 elif DEV_DEBUG and active_tab == '📻 Radio (debug)':
-    # import apenas quando necessário (evita importar se DEV_DEBUG=False)
     from views.radio_debug_page import render_radio_debug_page
     render_radio_debug_page(TOKEN)
 
 else:  # '🎶 Playlists'
     render_playlists_page()
+
