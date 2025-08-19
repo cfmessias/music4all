@@ -183,85 +183,74 @@ def _branch_sankey(
     level: Dict[str, int],
     root: str,
     focus: str,
-    branch_only: bool = False  # <- novo parâmetro
+    branch_only: bool = False
 ):
-    """
-    Sankey com:
-      • níveis distribuídos de forma estável (mesmo quando só há 2–3 níveis),
-      • ramo root→focus destacado a azul,
-      • restante a cinzento; se branch_only=True, linhas fora do ramo ficam invisíveis.
-    """
     FONT = "Segoe UI, Roboto, Helvetica, Arial, sans-serif"
     PALETTE = px.colors.qualitative.Set3
     LINK_GREY = "rgba(0,0,0,0.18)"
     BLUE = "#3b82f6"
 
-    # Índices dos nós
     idx = {n: i for i, n in enumerate(nodes)}
 
-    # X por nível (robusto com poucos níveis)
+    # 10% de folga em cada lado
     lvls = [level.get(n, 0) for n in nodes]
     uniq_lvls = sorted(set(lvls))
     if len(uniq_lvls) <= 1:
         pos_map = {uniq_lvls[0] if uniq_lvls else 0: 0.5}
     else:
         import numpy as np
-        xs_positions = np.linspace(0.06, 0.94, num=len(uniq_lvls))
+        xs_positions = np.linspace(0.10, 0.90, num=len(uniq_lvls))  # 10% … 90%
         pos_map = {lv: float(x) for lv, x in zip(uniq_lvls, xs_positions)}
     xs = [pos_map[level.get(n, 0)] for n in nodes]
 
-    # Cores (nós do caminho a azul)
+    # nós do caminho a azul
     reps = (len(nodes) // len(PALETTE)) + 1
     ncolors = (PALETTE * reps)[: len(nodes)]
-
     path = set(_path_edges(edges, root, focus))
     path_nodes = {root, focus} | {a for a, _ in path} | {b for _, b in path}
     for i, n in enumerate(nodes):
         if n in path_nodes:
             ncolors[i] = BLUE
 
-    # Ligações: azul no caminho; fora do caminho ficam cinzentas ou invisíveis
+    # ligações (cinza, ou invisíveis quando branch_only=True)
     src, dst, val, lcol = [], [], [], []
     for a, b in edges:
         if a in idx and b in idx:
-            src.append(idx[a])
-            dst.append(idx[b])
-            val.append(1)
+            src.append(idx[a]); dst.append(idx[b]); val.append(1)
             if (a, b) in path:
                 lcol.append(BLUE)
             else:
                 lcol.append("rgba(0,0,0,0)" if branch_only else LINK_GREY)
 
-    # Ajustes para grafos pequenos
-    few_nodes = len(nodes) <= 8
-    node_thickness = 16 if few_nodes else 20
-    node_pad = 12 if few_nodes else 18
+    # proporções mais equilibradas em grafos pequenos
+    few = len(nodes) <= 8
+    node_thickness = 14 if few else 20
+    node_pad = 10 if few else 18
 
-    fig = go.Figure(
-        go.Sankey(
-            arrangement="fixed",
-            node=dict(
-                label=nodes,
-                x=xs,
-                pad=node_pad,
-                thickness=node_thickness,
-                color=ncolors,
-                line=dict(color="rgba(0,0,0,0.25)", width=0.8),
-                hovertemplate="%{label}<extra></extra>",
-            ),
-            link=dict(
-                source=src,
-                target=dst,
-                value=val,
-                color=lcol,
-                hovertemplate="%{source.label} → %{target.label}<extra></extra>",
-            ),
-        )
-    )
+    fig = go.Figure(go.Sankey(
+        arrangement="fixed",
+        node=dict(
+            label=nodes,
+            x=xs,
+            pad=node_pad,
+            thickness=node_thickness,
+            color=ncolors,
+            line=dict(color="rgba(0,0,0,0.25)", width=0.8),
+            hovertemplate="%{label}<extra></extra>",
+        ),
+        link=dict(
+            source=src,
+            target=dst,
+            value=val,
+            color=lcol,
+            hovertemplate="%{source.label} → %{target.label}<extra></extra>",
+        ),
+    ))
 
+    # sem margens externas; a “folga” é dada pelas posições x (10%/90%)
     fig.update_layout(
-        margin=dict(l=8, r=8, t=6, b=6),
-        height=600 if few_nodes else 680,
+        margin=dict(l=0, r=0, t=6, b=6),
+        height=580 if few else 680,
         font=dict(family=FONT, size=15, color="#1f2937"),
         hoverlabel=dict(font_size=14, font_family=FONT),
     )
@@ -430,6 +419,16 @@ def render_genealogy_page():
 
     nodes, edges, level = _bfs_down_labels(adj, genre, depth)
 
+    # Fallback “1-hop” silencioso:
+    # se o BFS não devolveu arestas mas o género tem filhos imediatos,
+    # mostramos pelo menos root → filhos (garante sempre gráfico quando o Nível 1 tem opções).
+    if not edges:
+        direct_children = sorted(adj.get(genre, set()), key=str.lower)
+        if direct_children:
+            nodes = [genre] + direct_children
+            edges = [(genre, c) for c in direct_children]
+            level = {genre: 0, **{c: 1 for c in direct_children}}
+
     if not nodes or not edges:
         st.info("Sem ligações para esta profundidade.")
     else:
@@ -439,7 +438,7 @@ def render_genealogy_page():
             level,
             root=genre,
             focus=focus,
-            branch_only=branch_only  # <- controla a opacidade das linhas fora do ramo
+            branch_only=branch_only  # mantém o layout; esconde linhas fora do ramo se marcado
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.caption("Azul = caminho destacado do género seleccionado até ao ramo escolhido.")
