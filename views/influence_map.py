@@ -2,37 +2,37 @@
 import streamlit as st
 import plotly.graph_objects as go
 
-# Clique em Plotly dentro de Streamlit (opcional; fazemos fallback se faltar)
+# Optional: clickable Plotly inside Streamlit; we fallback if missing
 try:
     from streamlit_plotly_events import plotly_events
     HAS_PLOTLY_EVENTS = True
 except Exception:
     HAS_PLOTLY_EVENTS = False
 
-# Para o modo dinâmico (CSV)
+# Dynamic mode (CSV)
 from services.genre_csv import load_hierarchy_csv, build_indices, norm
 
 
 # ====================================================================
-# MODO 1 — DADOS CURADOS (mantém o que já existia, sem depender do CSV)
+# MODE 1 — CURATED DATA (kept as before, independent of CSV)
 # ====================================================================
 def _curated_graph():
     nodes = [
-        # Raízes e matrizes
+        # Roots & matrices
         "African musical traditions", "Work songs/Field hollers", "Spirituals/Gospel",
         "Country/Old-time", "Jazz (early)",
 
-        # Blues e variações
+        # Blues and variants
         "Blues", "Delta Blues", "Chicago Blues",
 
-        # Primeiras ramificações populares
+        # Early popular branches
         "R&B (40s/50s)", "Rock ’n’ Roll", "Rockabilly", "Soul", "Funk",
 
-        # Rock (linhas clássicas)
+        # Rock (classic lines)
         "Blues Rock", "British Blues", "Hard Rock", "Psychedelic Rock",
         "Progressive Rock", "Heavy Metal",
 
-        # Outras derivações
+        # Other derivations
         "Jazz Fusion", "Disco", "Hip-Hop", "Pop/Rock (mainstream)",
     ]
     links = [
@@ -76,49 +76,49 @@ def _curated_graph():
 
 
 # ====================================================================
-# MODO 2 — DADOS DINÂMICOS (a partir do teu CSV de géneros)
+# MODE 2 — DYNAMIC DATA (from your genres CSV)
 # ====================================================================
 def _graph_from_csv(root_label: str, down_depth: int = 3, up_levels: int = 1,
                     include_siblings: bool = True, max_edges: int = 2000):
     """
-    Constrói NODES/LINKS a partir do CSV para o nó 'root_label'.
+    Build NODES/LINKS from the CSV for 'root_label'.
 
-    down_depth: nº de níveis a descer (filhos, netos, …)
-    up_levels:  nº de níveis a subir (pai, avô, …) para contexto
-    include_siblings: incluir irmãos dos nós quando subimos
+    down_depth: how many levels to go down (children, grandchildren, …)
+    up_levels:  how many levels to go up (parent, grandparent, …) for context
+    include_siblings: include siblings when going up (adds context)
     """
     try:
         df, _ = load_hierarchy_csv()
         children, leaves, roots, leaf_url = build_indices(df)
     except Exception as e:
-        st.error(f"Erro a carregar CSV de géneros: {e}")
+        st.error(f"Failed to load genres CSV: {e}")
         return [], []
 
-    # --- índice de pais para permitir "subir"
-    parents_map = {}  # prefixo_do_filho (tuple) -> prefixo_do_pai (tuple)
+    # parent index to allow going up
+    parents_map = {}  # child_prefix (tuple) -> parent_prefix (tuple)
     for pref, chs in children.items():
         for ch in chs:
             child_pref = tuple(list(pref) + [ch])
             parents_map[child_pref] = pref
 
-    # --- encontrar candidatos cujo último segmento corresponda ao label
+    # find candidates whose last segment matches the label
     target = norm(root_label)
-    candidatos = []
+    candidates = []
     for pref in children.keys():
         if pref and norm(pref[-1]) == target:
-            candidatos.append(pref)
-    if not candidatos:
+            candidates.append(pref)
+    if not candidates:
         for pref in children.keys():
             if pref and target in norm(pref[-1]):
-                candidatos.append(pref)
-    if not candidatos:
-        st.warning("Género não encontrado no CSV.")
+                candidates.append(pref)
+    if not candidates:
+        st.warning("Genre not found in CSV.")
         return [], []
 
-    # escolher o caminho MAIS PROFUNDO (melhor contexto quando há duplicados)
-    root = max(candidatos, key=lambda p: len(p))
+    # choose the DEEPEST matching path (best context when duplicates exist)
+    root = max(candidates, key=lambda p: len(p))
 
-    # --- descer (BFS) até "down_depth"
+    # BFS down
     from collections import deque
     seen_prefixes = {root}
     nodes = set([root[-1]])
@@ -140,11 +140,10 @@ def _graph_from_csv(root_label: str, down_depth: int = 3, up_levels: int = 1,
                 seen_prefixes.add(child_pref)
                 q.append((child_pref, d + 1))
 
-    # --- subir "up_levels" e incluir irmãos (mais contexto)
+    # BFS up (with siblings)
     asc = root
     for _ in range(up_levels):
         parent_pref = parents_map.get(asc)
-        # sem pai, ou pai == () (nível raiz virtual) → parar
         if not parent_pref or len(parent_pref) == 0:
             break
 
@@ -159,9 +158,9 @@ def _graph_from_csv(root_label: str, down_depth: int = 3, up_levels: int = 1,
                     nodes.add(sib)
                     links.append((parent_label, sib, 1))
 
-        asc = parent_pref  # sobe mais um nível
+        asc = parent_pref  # go up another level
 
-    # ordenar nós (root primeiro)
+    # sort nodes (root first)
     def _key(n):
         return (0 if norm(n) == target else 1, n.lower())
     nodes = sorted(nodes, key=_key)
@@ -170,7 +169,7 @@ def _graph_from_csv(root_label: str, down_depth: int = 3, up_levels: int = 1,
 
 
 # ====================================================================
-# Utilitários (funcionam com qualquer par nodes/links)
+# Utilities (work with any nodes/links pair)
 # ====================================================================
 def _index_graph(nodes, links):
     from collections import defaultdict
@@ -186,47 +185,46 @@ def _index_graph(nodes, links):
     return node_index, parents, children
 
 def _explain_label(label: str, parents, children):
-    """Resumo automático a partir das ligações fornecidas."""
+    """Auto summary from provided links."""
     parts = []
     if label.lower() == "blues":
         parts.append(
-            "**Etimologia**: *blues* vem de **blue devils** (séc. XVII), "
-            "associado a tristeza/melancolia — daqui a expressão *to feel blue*. "
-            "O estilo ganhou o nome pela função de expressar dor, resistência e esperança "
-            "nas comunidades afro-americanas."
+            "**Etymology**: *blues* links to **blue devils** (17th c.), "
+            "i.e., melancholy/sadness — hence *to feel blue*. "
+            "The style’s name reflects its role expressing sorrow, resilience, and hope "
+            "in African-American communities."
         )
 
     infl = parents.get(label, [])
     if infl:
-        parts.append("**Influências diretas**: " + ", ".join(infl) + ".")
+        parts.append("**Direct influences**: " + ", ".join(infl) + ".")
     der = children.get(label, [])
     if der:
-        parts.append("**Derivações/impacto imediato**: " + ", ".join(der) + ".")
-    netos = sorted({g for c in der for g in children.get(c, [])})
-    if netos:
-        parts.append("**Ramificações seguintes**: " + ", ".join(netos) + ".")
+        parts.append("**Immediate derivatives/impact**: " + ", ".join(der) + ".")
+    grand = sorted({g for c in der for g in children.get(c, [])})
+    if grand:
+        parts.append("**Next branches**: " + ", ".join(grand) + ".")
 
     if not parts:
-        parts.append("Sem informação adicional neste mapa para este nó.")
-    parts.append("_Texto gerado automaticamente a partir das ligações do mapa._")
+        parts.append("No additional information in this map for this node.")
+    parts.append("_Text generated from the current map links._")
     return "\n\n".join(parts)
 
 def _build_sankey(nodes, links, title="Influence map"):
-    import plotly.express as px  # para paleta pastel
+    import plotly.express as px  # for a soft qualitative palette
 
     idx = {n: i for i, n in enumerate(nodes)}
     src = [idx[s] for (s, t, *_) in links if s in idx and t in idx]
     trg = [idx[t] for (s, t, *_) in links if s in idx and t in idx]
-    val = [ (rest[0] if rest else 1) for (s, t, *rest) in links if s in idx and t in idx ]
+    val = [(rest[0] if rest else 1) for (s, t, *rest) in links if s in idx and t in idx]
 
-    FONT_STACK = "Segoe UI Semibold, Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+    FONT_STACK = "Segoe UI, Roboto, Helvetica, Arial, sans-serif"
 
-    # paleta suave para nós
     base_palette = px.colors.qualitative.Set3
     repeats = (len(nodes) // len(base_palette)) + 1
     node_colors = (base_palette * repeats)[:len(nodes)]
 
-    LINK_GREY = "rgba(0,0,0,0.18)"  # curvas em cinzento claro
+    LINK_GREY = "rgba(0,0,0,0.18)"
 
     fig = go.Figure(data=[go.Sankey(
         arrangement="snap",
@@ -234,18 +232,18 @@ def _build_sankey(nodes, links, title="Influence map"):
             label=nodes,
             pad=22,
             thickness=20,
-            color=node_colors,  # cores explícitas dos nós
+            color=node_colors,
             line=dict(color="rgba(0,0,0,0.25)", width=0.7),
             hovertemplate="%{label}<extra></extra>",
-            customdata=nodes,                    # para clique em NÓ
+            customdata=nodes,                    # for node click
         ),
         link=dict(
             source=src,
             target=trg,
             value=val,
-            color=LINK_GREY,                     # curvas cinzentas
+            color=LINK_GREY,
             hovertemplate="%{source.label} → %{target.label} (%{value})<extra></extra>",
-            customdata=[nodes[t] for t in trg],  # para clique em LIGAÇÃO (target)
+            customdata=[nodes[t] for t in trg],  # for link click (target)
         ),
     )])
 
@@ -255,39 +253,30 @@ def _build_sankey(nodes, links, title="Influence map"):
         height=560,
         font=dict(family=FONT_STACK, size=16, color="#1f2937"),
         hoverlabel=dict(font_size=14, font_family=FONT_STACK),
-        clickmode="event+select",               # garante evento de clique
+        clickmode="event+select",
     )
     fig.update_traces(textfont=dict(family=FONT_STACK, size=16, color="#222"))
     return fig
 
 def _label_from_event(ev: dict, nodes: list, links: list):
-    """Extrai um label fiável de um evento do Sankey (nó ou ligação)."""
-    # 1) direto
+    """Extract a reliable label from a Sankey event (node or link)."""
     label = ev.get("label")
     if isinstance(label, str) and label:
         return label
-
-    # 2) customdata (nós / ligações)
     cd = ev.get("customdata")
     if isinstance(cd, str) and cd:
         return cd
     if isinstance(cd, list) and cd and isinstance(cd[0], str):
         return cd[0]
-
-    # 3) índices específicos do sankey (target preferido)
     trg = ev.get("target"); src = ev.get("source")
     if isinstance(trg, int) and 0 <= trg < len(nodes):
         return nodes[trg]
     if isinstance(src, int) and 0 <= src < len(nodes):
         return nodes[src]
-
-    # 4) fallback genérico por pointNumber
     pn = ev.get("pointIndex") if "pointIndex" in ev else ev.get("pointNumber")
     if isinstance(pn, int):
-        # se for nó
         if 0 <= pn < len(nodes):
             return nodes[pn]
-        # se for ligação, devolve o target dessa ligação (mais útil)
         if 0 <= pn < len(links):
             try:
                 return links[pn][1]
@@ -297,39 +286,77 @@ def _label_from_event(ev: dict, nodes: list, links: list):
 
 
 # ====================================================================
-# Página
+# Page
 # ====================================================================
 def render_influence_map_page():
     st.subheader("🎼 Blues roots & influence map")
 
-    # Modo de dados
+    # --- Read defaults coming from Genealogy (if any) ---
+    root_default  = st.session_state.get("infl_root", "Blues")
+    focus_default = st.session_state.get("infl_focus", root_default)
+    depth_default = int(st.session_state.get("infl_depth", 3))
+    up_default    = int(st.session_state.get("infl_up", 1))
+
+    # --- Data source (guard + radio) ---
+    options = ["Dynamic", "Curated"]
+    aliases = {"Dinâmico": "Dynamic", "Dinamico": "Dynamic", "Curado": "Curated"}
+
+    # normalizar ANTES do widget existir
+    prior = st.session_state.get("infl_mode")
+    if prior in aliases:
+        st.session_state["infl_mode"] = aliases[prior]
+    if st.session_state.get("infl_mode") not in options:
+        st.session_state["infl_mode"] = options[0]
+
     mode = st.radio(
-        "Fonte de dados",
-        ["Curado", "Dinâmico (CSV de géneros)"],
+        "Data source",
+        options,
+        index=options.index(st.session_state["infl_mode"]),
         horizontal=True,
-        key="infl_mode",
+        key="infl_mode",     # o próprio radio passa a gerir esta key
     )
 
-    # ===== Construção dos dados =====
-    if mode == "Curado":
+# >>> NÃO escrevas st.session_state["infl_mode"] = mode aqui <<< 
+# (o radio já atualiza esta key por nós)
+
+
+    # --- Controls (always visible) ---
+    # --- defaults antes de criar os widgets (importante) ---
+    st.session_state.setdefault("infl_root", st.session_state.get("infl_root", "Blues"))
+    st.session_state.setdefault("infl_depth", st.session_state.get("infl_depth", 3))
+    st.session_state.setdefault("infl_up",    st.session_state.get("infl_up", 1))
+
+    colA, colB, colC = st.columns([0.55, 0.30, 0.15])
+
+    with colA:
+        # O text_input passa a gerir a própria key "infl_root"
+        root = st.text_input("Start genre", key="infl_root")
+
+        # Nunca escrevas diretamente na mesma key depois do widget.
+        # Usa callback: executa antes da próxima renderização.
+        def _jump_blues():
+            st.session_state["infl_root"] = "Blues"
+        st.button("Blues", help="Quick jump to the Blues branch", on_click=_jump_blues)
+
+    with colB:
+        depth = st.slider("Depth (downstream)", 1, 5, key="infl_depth")
+
+    with colC:
+        up = st.selectbox("Levels up", options=[0, 1, 2], key="infl_up")
+
+    # ===== Build data =====
+    if mode == "Curated":
         nodes, links = _curated_graph()
         title = "Blues → R&B/Rock/Soul/Funk… (influence map)"
-        root = "Blues"  # default para diagnóstico
+        root_for_depth = "Blues"
     else:
-        colA, colB, colC = st.columns([0.6, 0.25, 0.15])
-        with colA:
-            root = st.text_input("Género de partida", value="Blues", key="infl_root")
-        with colB:
-            depth = st.slider("Profundidade (descer)", 1, 5, 3, key="infl_depth")
-        with colC:
-            up = st.selectbox("Subir", options=[0, 1, 2], index=1, help="Níveis a subir para contexto", key="infl_up")
-
         nodes, links = _graph_from_csv(root, down_depth=depth, up_levels=up, include_siblings=True)
         if not nodes or not links:
             return
-        title = f"{root} — mapa de influências (CSV)"
+        title = f"{root} — influence map (dynamic)"
+        root_for_depth = root
 
-        # Diagnóstico: profundidade realmente atingida a partir do nó "root"
+        # Diagnose actual depth reached from root
         from collections import deque, defaultdict
         graph = defaultdict(list)
         for s, t, *_ in links:
@@ -348,12 +375,12 @@ def render_influence_map_page():
                         q.append((v, d + 1))
             return maxd
 
-        st.caption(f"📏 Profundidade pedida: {depth} · alcançada: {_max_depth_from(root)} · nós: {len(nodes)} · ligações: {len(links)}")
+        st.caption(f"Requested depth: {depth} · reached: {_max_depth_from(root_for_depth)} · nodes: {len(nodes)} · links: {len(links)}")
 
-    # Índices (para resumo dinâmico)
+    # Indices (for the auto explanation)
     node_index, parents, children = _index_graph(nodes, links)
 
-    # Layout com gráfico + painel de seleção/explicação
+    # Layout: plot (left) + side panel (right)
     col_plot, col_side = st.columns([0.68, 0.32])
 
     with col_plot:
@@ -368,33 +395,33 @@ def render_influence_map_page():
                 select_event=False,
                 override_height=560,
                 override_width="100%",
-                key=f"sankey_{'curado' if mode=='Curado' else 'dinamico'}",
+                key=f"sankey_{'curated' if mode=='Curated' else 'dynamic'}",
             )
             if events:
                 selected_label = _label_from_event(events[0], nodes, links)
         else:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            st.caption("Para gráfico clicável, instala `streamlit-plotly-events` e reinicia a aplicação.")
+            st.caption("Tip: install `streamlit-plotly-events` for clickable nodes & links.")
 
     with col_side:
-        st.markdown("#### Seleção de nó")
+        st.markdown("#### Pick a node")
 
-        # Fallback fiável: seletor de nó (funciona mesmo que o clique não venha)
-        default_idx = 0
-        if selected_label and selected_label in nodes:
-            default_idx = nodes.index(selected_label)
-        elif st.session_state.get("infl_selected") in nodes:
-            default_idx = nodes.index(st.session_state["infl_selected"])
+        # Fallback selector by label (works even if no click happens)
+        default_label = selected_label or (st.session_state.get("infl_selected") or focus_default)
+        if default_label not in nodes:
+            default_label = nodes[0]
+        chosen = st.selectbox("Node", options=nodes, index=nodes.index(default_label), key="infl_pick_label")
 
-        pick = st.selectbox("Escolhe um nó", options=list(range(len(nodes))),
-                            index=default_idx, format_func=lambda i: nodes[i], key="infl_pick")
-
-        chosen = nodes[pick]
         st.session_state["infl_selected"] = chosen
-
         st.markdown(_explain_label(chosen, parents, children))
 
-        # Atalho para a página de Géneros
-        if st.button("🔎 Pesquisar este género na página *🧭 Genres*", use_container_width=True):
+        # Shortcut to Genres page
+        if st.button("🔎 Search this genre on the *🧭 Genres* page", use_container_width=True):
             st.session_state["genres_search_q"] = chosen
-            st.success("Feito! Abre a aba **🧭 Genres** e carrega em **Search**.")
+            st.success("Done! Open the **🧭 Genres** tab and hit **Search**.")
+
+    # Keep state in sync for cross-page navigation
+    # st.session_state["infl_root"]  = root
+    # st.session_state["infl_focus"] = chosen
+    # st.session_state["infl_depth"] = depth
+    # st.session_state["infl_up"]    = up

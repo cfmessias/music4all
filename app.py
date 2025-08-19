@@ -7,6 +7,7 @@ from views.spotify_page import render_spotify_page
 from views.wiki_page import render_wikipedia_page
 from views.playlists_page import render_playlists_page
 from views.genres_page import render_genres_page
+from views.genealogy_page import render_genealogy_page  
 # NOTA: não importamos radio_debug_page aqui; só importamos dentro do ramo se DEV_DEBUG=True
 
 # ---------------------------
@@ -49,7 +50,10 @@ if not TOKEN:
 #  Top nav (radio horizontal)
 # ---------------------------
 # Lista de tabs (pode ser alterada dependendo do modo de desenvolvimento)
-base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', '🎶 Playlists', '🗺️ Influence map', '🧩 Genre map']
+# base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', '🧬 Genealogia',
+#              '🎶 Playlists', '🗺️ Influence map', '🧩 Genre map']  
+base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', 
+             '🎶 Playlists', '🧬 Genealogy','🗺️ Influence map']  
 tabs = base_tabs + ['📻 Radio (debug)'] if DEV_DEBUG else base_tabs
 
 # garantir um valor inicial coerente
@@ -84,13 +88,16 @@ elif active_tab == '📚 Wikipedia':
 
 elif active_tab == '🧭 Genres':
     render_genres_page()
+    
+elif active_tab == '🧬 Genealogy':         # ← NOVO
+    render_genealogy_page()
 
 elif active_tab == '🗺️ Influence map':
     render_influence_map_page()
 
-elif active_tab == '🧩 Genre map':
-    from views.genre_map_auto import render_genre_map_page
-    render_genre_map_page()
+# elif active_tab == '🧩 Genre map':
+#     from views.genre_map_auto import render_genre_map_page
+#     render_genre_map_page()
 
 elif DEV_DEBUG and active_tab == '📻 Radio (debug)':
     from views.radio_debug_page import render_radio_debug_page
