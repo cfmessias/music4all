@@ -1,12 +1,12 @@
 # views/genres_page.py
 import streamlit as st
 from services.ui_helpers import ui_mobile  # mantido, mas layout é forçado a "mobile"
-from services.spotify_radio import find_artist_radio_playlist
+from services.spotify.radio import find_artist_radio_playlist
 from services.genre_csv import (
     load_hierarchy_csv, build_indices, norm,
     make_key as _key, build_context_keywords
 )
-from services.spotify_lookup import (
+from services.spotify.lookup import (
     get_spotify_token_cached, spotify_genre_top_artists,
     spotify_genre_playlists, embed_spotify
 )

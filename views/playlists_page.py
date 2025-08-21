@@ -17,7 +17,7 @@ from services.playlist import (
     add_tracks_to_playlist,
     remove_track_at,
 )  # :contentReference[oaicite:0]{index=0}
-from services.spotify_session_push import push_session_playlist
+from services.spotify.session_push import push_session_playlist
 from services.page_help import show_page_help
 
 

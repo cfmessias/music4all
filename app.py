@@ -3,7 +3,7 @@ import os
 import streamlit as st
 from views.influence_map import render_influence_map_page
 from services.spotify import get_spotify_token
-from views.spotify_page import render_spotify_page
+from views.spotify.page import render_spotify_page
 from views.wiki_page import render_wikipedia_page
 from views.playlists_page import render_playlists_page
 from views.genres_page import render_genres_page

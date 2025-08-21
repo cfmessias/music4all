@@ -5,8 +5,8 @@ import re
 import requests
 import streamlit as st
 
-from services.spotify_lookup import embed_spotify
-from services.spotify_radio import (
+from services.spotify.lookup import embed_spotify
+from services.spotify.radio import (
     find_artist_this_is_playlist,
     find_artist_radio_playlist,
     get_thisis_candidates,

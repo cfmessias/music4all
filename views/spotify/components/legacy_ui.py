@@ -2,7 +2,7 @@
 import streamlit as st
 from services.ui_helpers import ui_mobile
 from services.spotify import load_genres_csv
-from .spotify_helpers import reset_spotify_filters
+from ..helpers import reset_spotify_filters
 
 # ============================================================
 # Compose query (sem “sujar” o campo Artist quando é só género)

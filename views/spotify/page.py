@@ -3,13 +3,13 @@ import streamlit as st
 
 # módulos existentes do teu projeto
 from services.spotify import load_genres_csv
-from services.spotify_genres import fetch_spotify_genre_seeds  # se tiveres este helper
-from .spotify_ui import (
+from services.spotify.genres import fetch_spotify_genre_seeds  # se tiveres este helper
+from .components.legacy_ui import (
     render_spotify_filters,
     render_top_action_buttons_spotify,
-    render_pagination_controls,   # <-- adicionámos esta importação
+    render_pagination_controls,
 )
-from .spotify_results import render_spotify_results
+from .results import render_spotify_results
 
 
 def render_spotify_page(token: str, client_id: str, client_secret: str):
