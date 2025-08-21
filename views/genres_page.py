@@ -11,6 +11,8 @@ from services.spotify.lookup import (
     spotify_genre_playlists, embed_spotify
 )
 from services.page_help import show_page_help
+from services.wiki import resolve_wikipedia_title
+
 
     
 
@@ -149,6 +151,24 @@ def _search_paths(paths, query: str, max_results: int = 200):
 def render_generos_page():
     show_page_help("genres", lang="PT")
     st.subheader("🧭 Genre hierarchy")
+    
+    from services.wiki import resolve_wikipedia_title
+
+    parent_genre = (
+        st.session_state.get("selected_genre")
+        or st.session_state.get("genres_search_q")
+        or "Rock"
+    )
+    title_pt, url_pt = resolve_wikipedia_title(parent_genre, lang="pt")
+    title_en, url_en = (None, None) if url_pt else resolve_wikipedia_title(parent_genre, lang="en")
+
+    if url_pt or url_en:
+        wiki_url = url_pt or url_en
+        wiki_lbl = "Wikipédia" if url_pt else "Wikipedia"
+        st.markdown(f"**{parent_genre}** · [{wiki_lbl}]({wiki_url})")
+    else:
+        st.markdown(f"**{parent_genre}**")
+
 
     try:
         df, used_path = load_hierarchy_csv()
@@ -190,6 +210,20 @@ def render_generos_page():
         st.session_state["genres_path"] = []
     path = st.session_state["genres_path"]
     prefix = tuple(path)
+
+    focus = st.session_state.get("genres__selected_genre")
+    if not focus:
+        # se usas query params noutros sítios:
+        try:
+            q = st.query_params.get("genre")
+            if q:
+                focus = q
+        except Exception:
+            pass
+    # aplica 'focus' à UI se tiveres um select/árvore
+    if focus:
+        # ajusta isto ao teu componente concreto (selectbox/árvore)
+        st.session_state["selected_genre"] = focus
 
     # ---------------------------
     # PESQUISA

@@ -16,6 +16,7 @@ from services.spotify.radio import (
 from services.spotify import get_auth_header, fetch_all_albums, fmt
 from services.ui_helpers import ui_mobile, ui_audio_preview, ms_to_mmss
 from services.playlist import list_playlists, add_tracks_to_playlist
+from services.spotify.search_service import coerce_query_to_genre_if_applicable
 
 OV_KEY = "artist_playlist_overrides"
 if OV_KEY not in st.session_state:
@@ -274,6 +275,11 @@ def cached_fetch_all_albums(token: str, artist_id: str):
 #   UI
 # =========================
 def render_spotify_results(token: str):
+    genre_only = (
+        st.session_state.get("genre_only")
+        or st.session_state.get("spotify_genre_free")
+        or None
+    )
     """
     Artist search with user-controlled wildcards:
       'Genesis'   (exact) | '*Genesis' (suffix) | 'Genesis*' (prefix) | '*Genesis*' (contains)
@@ -289,17 +295,21 @@ def render_spotify_results(token: str):
         st.session_state.pop("query_effective", None)
 
     # 1) Query (prioriza query_effective para não “sujar” o campo Artist)
-    raw_q = (st.session_state.get("query_effective") or _extract_user_query())
+   
+    raw_q = st.session_state.get("query_effective") or _extract_user_query()
     if not raw_q:
-        return
-    # 1) Query from top search box (no fallback input here)
-    raw_q = (st.session_state.get("query_effective") or _extract_user_query())
-    if not raw_q:
-        # st.info("Type the artist in the search box at the top. You can use * at the start and/or end.")
         return
 
-    # 1b) Detect genre-only query: genre:"<value>"
-    genre_only = _parse_genre_only(raw_q)
+    # 1b) Detectar query explícita de género: genre:"<valor>"
+    explicit_genre = _parse_genre_only(raw_q)   # importado como parse_genre_only do serviço
+    if explicit_genre:
+        genre_only = explicit_genre
+    elif not genre_only:
+        # 1c) Se não veio explícito, coerção “inteligente” (ex.: "Fado")
+        forced_genre = coerce_query_to_genre_if_applicable(raw_q, token=TOKEN)
+        if forced_genre:
+            genre_only = forced_genre
+
     # 2) Search
     per_page = 20
     if genre_only:

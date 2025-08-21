@@ -78,3 +78,26 @@ def ensure_user_spotify():
         clear_user_auth()
         st.error("Falhou a autenticação. Clica no botão acima para tentar novamente.")
         return None, None
+
+# --- Helpers de compatibilidade p/ chamadas HTTP diretas ---------------------
+
+def get_user_access_token() -> str | None:
+    """
+    Devolve o access_token do utilizador (se já tiver feito login).
+    """
+    tok = st.session_state.get("user_token_info")
+    if isinstance(tok, dict):
+        return tok.get("access_token")
+    return None
+
+
+def get_auth_header(token: str | None = None) -> dict:
+    """
+    Devolve o header Authorization a partir de um token.
+    Se token for None, tenta usar o token do utilizador em sessão.
+    """
+    if not token:
+        token = get_user_access_token()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}

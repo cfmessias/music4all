@@ -1,6 +1,6 @@
 import streamlit as st
 from typing import Tuple, Optional
-from .spotify_oauth import ensure_user_spotify  # spotipy client
+from .auth import ensure_user_spotify  # spotipy client
 
 def push_session_playlist(playlist_name: str = "Music4all – Session",
                           public: bool = False,
