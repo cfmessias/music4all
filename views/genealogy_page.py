@@ -1,7 +1,10 @@
 # views/genealogy_page.py
 # -----------------------------------------------------------------------------
 # Music4all · Genre Genealogy (dynamic CSV + extra CSV + curated KB)
-# Gráfico de ramo multi-nível com destaque do caminho + quick picks no topo
+# - Quick picks: em desktop são botões; em mobile uma select.
+# - Selectboxes em cascata (níveis) com correção do "reset".
+# - Sankey: 10% de folga lateral; linhas não-destacadas mais claras;
+#           "Show only the selected branch" mantém o layout e esconde só as linhas.
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -17,22 +20,25 @@ import streamlit as st
 
 from services.genre_csv import load_hierarchy_csv, build_indices, norm
 from services.genres_kb import genre_summary, kb_neighbors, canonical_name, BLURBS
+from services.page_help import show_page_help
 
 
 # ======================
 # Helpers
 # ======================
-def _unique_sorted(labels: list[str]) -> list[str]:
-    """Unique + sort estável (case/alias-insensitive)."""
+def _unique_sorted(labels: List[str]) -> List[str]:
+    """Unique + sort (case/alias-insensitive)."""
     cleaned = {canonical_name(x) for x in labels if isinstance(x, str) and x.strip()}
     return sorted(cleaned, key=str.lower)
 
+
 def _cap(s: str, n: int = 12) -> str:
-    s = (s or "").strip()
-    return s if len(s) <= n else s[: n - 1] + "…"
+    s = (s or '').strip()
+    return s if len(s) <= n else s[: n - 1] + '…'
+
 
 def _set_query(name: str):
-    st.session_state["gen_query"] = name
+    st.session_state['gen_query'] = name
 
 
 # ======================
@@ -44,6 +50,7 @@ def _load_children_index():
     children, leaves, roots, leaf_url = build_indices(df)
     return children  # dict[prefix(tuple) -> set(children_str)]
 
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _all_labels(children_index):
     labels = set()
@@ -52,6 +59,7 @@ def _all_labels(children_index):
             labels.add(pref[-1])
         labels.update({k for k in kids if k})
     return sorted(labels, key=str.lower)
+
 
 def _neighbors(label: str, children_index):
     """Pais e filhos imediatos a partir do índice de prefixos do CSV dinâmico."""
@@ -95,6 +103,7 @@ def _load_extra_edges(path: str = "dados/influences_origins.csv", sep: str = ";"
                 edges.add((a, b))
     return edges
 
+
 def _neighbors_from_edges(label: str, edges):
     lab_n = norm(label)
     parents, childs = set(), set()
@@ -124,6 +133,7 @@ def _build_label_adjacency(children_index) -> Dict[str, Set[str]]:
                 adj[parent].add(canonical_name(k))
     return adj
 
+
 def _bfs_down_labels(adj: Dict[str, Set[str]], root: str, depth: int):
     """BFS a partir de root por labels (até 'depth' níveis)."""
     root = canonical_name(root)
@@ -146,6 +156,7 @@ def _bfs_down_labels(adj: Dict[str, Set[str]], root: str, depth: int):
 
     ordered = sorted(nodes, key=lambda n: (level[n], n.lower()))
     return ordered, edges, level
+
 
 def _path_edges(edges: List[Tuple[str, str]], start: str, target: str) -> List[Tuple[str, str]]:
     """Um caminho dirigido start→target (se existir)."""
@@ -177,22 +188,31 @@ def _path_edges(edges: List[Tuple[str, str]], start: str, target: str) -> List[T
     path.reverse()
     return path
 
+
 def _branch_sankey(
     nodes: List[str],
     edges: List[Tuple[str, str]],
     level: Dict[str, int],
     root: str,
     focus: str,
-    branch_only: bool = False
+    branch_only: bool = False,
+    is_mobile: bool = False,
 ):
+    """
+    Sankey com:
+      • níveis distribuídos de forma estável (10%…90%),
+      • ramo root→focus destacado a azul,
+      • restante a cinzento claro; se branch_only=True, linhas fora do ramo ficam invisíveis.
+    """
     FONT = "Segoe UI, Roboto, Helvetica, Arial, sans-serif"
     PALETTE = px.colors.qualitative.Set3
-    LINK_GREY = "rgba(0,0,0,0.18)"
+    LINK_GREY = "rgba(0,0,0,0.12)"
     BLUE = "#3b82f6"
 
+    # Índices dos nós
     idx = {n: i for i, n in enumerate(nodes)}
 
-    # 10% de folga em cada lado
+    # X por nível com 10% de folga lateral
     lvls = [level.get(n, 0) for n in nodes]
     uniq_lvls = sorted(set(lvls))
     if len(uniq_lvls) <= 1:
@@ -203,29 +223,35 @@ def _branch_sankey(
         pos_map = {lv: float(x) for lv, x in zip(uniq_lvls, xs_positions)}
     xs = [pos_map[level.get(n, 0)] for n in nodes]
 
-    # nós do caminho a azul
+    # Cores (nós do caminho a azul)
     reps = (len(nodes) // len(PALETTE)) + 1
     ncolors = (PALETTE * reps)[: len(nodes)]
+
     path = set(_path_edges(edges, root, focus))
     path_nodes = {root, focus} | {a for a, _ in path} | {b for _, b in path}
     for i, n in enumerate(nodes):
         if n in path_nodes:
             ncolors[i] = BLUE
 
-    # ligações (cinza, ou invisíveis quando branch_only=True)
+    # Ligações
     src, dst, val, lcol = [], [], [], []
     for a, b in edges:
         if a in idx and b in idx:
-            src.append(idx[a]); dst.append(idx[b]); val.append(1)
+            src.append(idx[a])
+            dst.append(idx[b])
+            val.append(1)
             if (a, b) in path:
                 lcol.append(BLUE)
             else:
                 lcol.append("rgba(0,0,0,0)" if branch_only else LINK_GREY)
 
-    # proporções mais equilibradas em grafos pequenos
+    # Proporções: em mobile mais fino/baixo
     few = len(nodes) <= 8
-    node_thickness = 14 if few else 20
-    node_pad = 10 if few else 18
+    node_thickness = (10 if is_mobile else (12 if few else 20))
+    node_pad       = (8  if is_mobile else (10 if few else 18))
+    chart_height   = (500 if is_mobile else (580 if few else 680))
+    font_size      = (13 if is_mobile else 15)
+    hover_size     = (12 if is_mobile else 14)
 
     fig = go.Figure(go.Sankey(
         arrangement="fixed",
@@ -247,14 +273,13 @@ def _branch_sankey(
         ),
     ))
 
-    # sem margens externas; a “folga” é dada pelas posições x (10%/90%)
     fig.update_layout(
         margin=dict(l=0, r=0, t=6, b=6),
-        height=580 if few else 680,
-        font=dict(family=FONT, size=15, color="#1f2937"),
-        hoverlabel=dict(font_size=14, font_family=FONT),
+        height=chart_height,
+        font=dict(family=FONT, size=font_size, color="#1f2937"),
+        hoverlabel=dict(font_size=hover_size, font_family=FONT),
     )
-    fig.update_traces(textfont=dict(family=FONT, size=15, color="#111827"))
+    fig.update_traces(textfont=dict(family=FONT, size=font_size, color="#111827"))
     return fig
 
 
@@ -262,23 +287,39 @@ def _branch_sankey(
 # Página
 # ======================
 def render_genealogy_page():
-    # Título + quick picks
-    colT1, colT2 = st.columns([0.62, 0.38])
+    # Sinal de "mobile layout" (usa toggle global se existir)
+    show_page_help("genealogy", lang="PT")
+
+    is_mobile = bool(st.session_state.get("mobile_layout") or st.session_state.get("mobile"))
+
+    # Título + quick picks (desktop=botões; mobile=select)
+    if not is_mobile:
+        colT1, colT2 = st.columns([0.62, 0.38])
+    else:
+        colT1, colT2 = st.columns([1.0, 0.0])
+
     with colT1:
         st.title("🧬 Genre Genealogy · Music4all")
-    with colT2:
-        st.markdown("**Quick picks**")
-        quick = ["Blues", "Jazz", "Rock", "Pop", "Metal", "House",
-                 "Funk", "Disco", "Hip-hop", "New Wave", "Synth-pop", "Reggae"]
-        qcols = st.columns(4)
-        for i, name in enumerate(quick):
-            with qcols[i % 4]:
-                st.button(_cap(name), key=f"gen_chip_top_{i}",
-                          on_click=_set_query, args=(name,))
+
+    quick = ["Blues", "Jazz", "Rock", "Pop", "Metal", "House",
+             "Funk", "Disco", "Hip-hop", "New Wave", "Synth-pop", "Reggae"]
+
+    if not is_mobile:
+        with colT2:
+            st.markdown("**Quick picks**")
+            qcols = st.columns(4)
+            for i, name in enumerate(quick):
+                with qcols[i % 4]:
+                    st.button(_cap(name), key=f"gen_chip_top_{i}",
+                              on_click=_set_query, args=(name,))
+    else:
+        pick = st.selectbox("Quick pick", ["— choose —"] + quick, key="gen_qp_select")
+        if pick and pick != "— choose —":
+            _set_query(pick)
 
     st.session_state.setdefault("gen_query", "")
 
-    # dados
+    # Dados
     try:
         children_index = _load_children_index()
     except Exception as e:
@@ -287,32 +328,30 @@ def render_genealogy_page():
     labels = _all_labels(children_index)
 
     # Pesquisa + Select
-    col1, col2 = st.columns([0.7, 0.3])
-    with col1:
-        st.text_input(
-            "Search genre",
-            placeholder="Type 2+ letters (e.g., Jazz, Blues, House, Prog Rock…)",
-            key="gen_query",
-            help="Search any music genre or subgenre. Start typing and pick from the suggestions.",
-        )
-        q = st.session_state["gen_query"].strip()
-    with col2:
-        if q:
-            matches = [x for x in labels if q.lower() in x.lower()] or labels
-            exact_idx = next((i for i, x in enumerate(matches) if x.lower() == q.lower()), None)
-            if exact_idx is not None:
-                picked = st.selectbox("Select", matches, index=exact_idx, key="gen_pick")
-            else:
-                sentinel = "— select a genre —"
-                disp = [sentinel] + matches
-                picked = st.selectbox("Select", disp, index=0, key="gen_pick")
-                if picked == sentinel:
-                    picked = ""
-        else:
-            st.selectbox("Select", ["— type to see options —"], index=0, disabled=True, key="gen_pick_disabled")
-            picked = ""
+   # Apenas o campo de pesquisa
+    st.text_input(
+        "Search genre",
+        placeholder="Type 2+ letters (e.g., Jazz, Blues, House, Prog Rock…)",
+        key="gen_query",
+        help="Search any music genre or subgenre. Start typing.",
+    )
+    q = st.session_state["gen_query"].strip()
 
-    genre = canonical_name(picked or (q if any(x.lower() == q.lower() for x in labels) else ""))
+    # Resolve género a partir do texto:
+    matches = [x for x in labels if q and q.lower() in x.lower()]
+    exact = next((x for x in labels if q and x.lower() == q.lower()), None)
+
+    if exact:
+        genre = canonical_name(exact)
+    elif len(matches) == 1:
+        genre = canonical_name(matches[0])
+    else:
+        genre = ""   # sem root fixo; o utilizador escolhe no Level 1
+
+    # (Opcional) pequena dica quando há ambiguidade
+    if q and not genre and len(matches) > 1:
+        st.caption("Refina a pesquisa ou escolhe o ramo em **Level 1**.")
+
 
     # Sem seleção ainda → ajuda
     if not genre:
@@ -333,19 +372,17 @@ def render_genealogy_page():
             )
         return
 
-    # 1) dinâmico
-    parents, children = _neighbors(genre, children_index)
-    # 2) extra (se houver)
+    # Influences/Derivatives
+    parents_dyn, children_dyn = _neighbors(genre, children_index)
     extra_edges = _load_extra_edges()
     if extra_edges:
         p2, c2 = _neighbors_from_edges(genre, extra_edges)
     else:
         p2, c2 = [], []
-    # 3) KB
     p3, c3 = kb_neighbors(genre)
 
-    parents  = _unique_sorted(list(set(parents)  | set(p2) | set(p3)))
-    children = _unique_sorted(list(set(children) | set(c2) | set(c3)))
+    parents  = _unique_sorted(list(set(parents_dyn)  | set(p2) | set(p3)))
+    children = _unique_sorted(list(set(children_dyn) | set(c2) | set(c3)))
 
     # Cabeçalho compacto
     b = BLURBS.get(genre, {})
@@ -371,7 +408,7 @@ def render_genealogy_page():
     adj = _build_label_adjacency(children_index)
     depth = st.slider("Map depth (levels below this genre)", 1, 4, 2, key="gen_depth")
 
-    # ---------- Selectboxes em cascata (horizontais, passo-a-passo) ----------
+    # Selectboxes em cascata (nível a nível)
     st.markdown("**Choose branch (level by level)**")
 
     path: List[str] = st.session_state.get("gen_path") or [genre]
@@ -408,20 +445,17 @@ def render_genealogy_page():
         chosen = canonical_name(sel)
         if len(path) <= lvl or path[lvl] != chosen:
             path = path[:lvl] + [chosen]
-        # próximo ciclo usará parent = path[lvl]
 
     st.session_state["gen_path"] = path
     focus = path[-1] if path else genre
 
     branch_only = st.checkbox("Show only the selected branch", value=False, key="gen_branch_only")
 
-    # ----- Construção do gráfico e desenho -----
-
+    # ----- Construção do grafo e desenho -----
     nodes, edges, level = _bfs_down_labels(adj, genre, depth)
 
-    # Fallback “1-hop” silencioso:
-    # se o BFS não devolveu arestas mas o género tem filhos imediatos,
-    # mostramos pelo menos root → filhos (garante sempre gráfico quando o Nível 1 tem opções).
+    # Fallback “1-hop” silencioso: se não há arestas mas existem filhos imediatos,
+    # desenha-se pelo menos root -> filhos (garante gráfico quando o Level 1 tem opções).
     if not edges:
         direct_children = sorted(adj.get(genre, set()), key=str.lower)
         if direct_children:
@@ -433,12 +467,10 @@ def render_genealogy_page():
         st.info("Sem ligações para esta profundidade.")
     else:
         fig = _branch_sankey(
-            nodes,
-            edges,
-            level,
-            root=genre,
-            focus=focus,
-            branch_only=branch_only  # mantém o layout; esconde linhas fora do ramo se marcado
+            nodes, edges, level,
+            root=genre, focus=focus,
+            branch_only=branch_only,
+            is_mobile=is_mobile,
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.caption("Azul = caminho destacado do género seleccionado até ao ramo escolhido.")

@@ -10,6 +10,9 @@ from services.spotify_lookup import (
     get_spotify_token_cached, spotify_genre_top_artists,
     spotify_genre_playlists, embed_spotify
 )
+from services.page_help import show_page_help
+
+    
 
 # -------------------------------------------------
 # Renders auxiliares (listas Spotify)
@@ -144,6 +147,7 @@ def _search_paths(paths, query: str, max_results: int = 200):
 # Página
 # -------------------------------------------------
 def render_generos_page():
+    show_page_help("genres", lang="PT")
     st.subheader("🧭 Genre hierarchy")
 
     try:

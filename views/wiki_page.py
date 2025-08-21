@@ -4,6 +4,10 @@ import requests
 import pandas as pd
 import streamlit as st
 from urllib.parse import quote
+from services.page_help import show_page_help
+
+
+    
 
 # -----------------------------
 # Helpers Wikipedia (REST API)
@@ -91,6 +95,9 @@ def load_wiki_styles_csv_quick():
 # Página
 # -----------------------------
 def render_wikipedia_page(token: str):
+
+    show_page_help("wikipedia", lang="PT")
+
     df = load_wiki_styles_csv_quick()
     if df is None:
         st.info("To enable 'Wikipedia styles', place a CSV named 'lista_artistas.csv' (or 'wikipedia_styles.csv') with columns Artista;Genero;URL in the app folder.")

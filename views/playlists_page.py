@@ -18,6 +18,9 @@ from services.playlist import (
     remove_track_at,
 )  # :contentReference[oaicite:0]{index=0}
 from services.spotify_session_push import push_session_playlist
+from services.page_help import show_page_help
+
+
 
 # =========================
 # Helpers
@@ -167,6 +170,8 @@ def _export_csv_bytes(playlist_name: str, tracks: List[Dict[str, Any]]) -> bytes
 # =========================
 
 def render_playlists_page():
+    show_page_help("playlists", lang="PT")
+
     st.header("Session playlist")
 
     # ---------- Nomes: memória ∪ CSV ----------

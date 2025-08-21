@@ -11,7 +11,7 @@ except Exception:
 
 # Dynamic mode (CSV)
 from services.genre_csv import load_hierarchy_csv, build_indices, norm
-
+from services.page_help import show_page_help
 
 # ====================================================================
 # MODE 1 — CURATED DATA (kept as before, independent of CSV)
@@ -289,6 +289,9 @@ def _label_from_event(ev: dict, nodes: list, links: list):
 # Page
 # ====================================================================
 def render_influence_map_page():
+
+    show_page_help("influence_map", lang="PT")
+
     st.subheader("🎼 Blues roots & influence map")
 
     # --- Read defaults coming from Genealogy (if any) ---

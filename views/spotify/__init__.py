@@ -1,0 +1,1 @@
+"""UI da área Spotify."""
