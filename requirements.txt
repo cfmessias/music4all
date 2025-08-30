@@ -9,3 +9,7 @@ streamlit-plotly-events>=0.0.6
 streamlit-echarts>=0.4.0
 pyecharts>=1.9.1
 Unidecode>=1.3
+beautifulsoup4>=4.12   # se fores mesmo parsear HTML/infoboxes da Wikipédia
+lxml>=5.0              # parser rápido para o bs4 (opcional)
+m3u8>=4.0              # caso passes a suportar HLS .m3u8 no player (parse cliente)
+validators>=0.22       # validar URLs antes de tocar
