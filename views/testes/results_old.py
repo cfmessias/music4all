@@ -1,4 +1,4 @@
-# views/spotify_results.py
+# views/spotify/results.py
 from __future__ import annotations
 
 import re
@@ -16,7 +16,10 @@ from services.spotify.radio import (
 from services.spotify import get_auth_header, fetch_all_albums, fmt
 from services.ui_helpers import ui_mobile, ui_audio_preview, ms_to_mmss
 from services.playlist import list_playlists, add_tracks_to_playlist
-from services.spotify.search_service import coerce_query_to_genre_if_applicable
+from services.spotify.search_service import (
+    coerce_query_to_genre_if_applicable,  # vamos usar só quando NÃO há nome
+)
+from services.genres_bridge import resolve_genre_canon_and_aliases, norm_label
 
 OV_KEY = "artist_playlist_overrides"
 if OV_KEY not in st.session_state:
@@ -29,41 +32,109 @@ WIKI_API = "https://{lang}.wikipedia.org/w/api.php"
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def _wiki_api_search(title: str, lang: str = "en") -> str | None:
+def _wiki_api_search(query: str, lang: str = "pt", limit: int = 6) -> list[dict]:
     try:
         r = requests.get(
             WIKI_API.format(lang=lang),
             params={
                 "action": "query",
                 "list": "search",
-                "srsearch": title,
+                "srsearch": query,
                 "format": "json",
-                "srlimit": 1,
+                "srlimit": limit,
+                "utf8": 1,
             },
             timeout=10,
         )
         if r.status_code != 200:
-            return None
-        hits = (r.json().get("query") or {}).get("search") or []
-        return hits[0]["title"] if hits else None
+            return []
+        return (r.json().get("query") or {}).get("search") or []
     except Exception:
-        return None
+        return []
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def resolve_wikipedia_title(
-    artist_name: str, lang: str = "en"
-) -> tuple[str | None, str | None]:
-    if not artist_name:
+def resolve_wikipedia_title(name: str, lang: str = "pt", hints: list[str] | None = None) -> tuple[str | None, str | None]:
+    """
+    Resolve título/URL na Wikipédia com heurística leve:
+    - tenta name + (cantor|música|singer|music) + pistas
+    - pontua candidatos por proximidade do título ao nome e presença das pistas no snippet
+    """
+    if not name:
         return None, None
-    for cand in (f"{artist_name} (band)", f"{artist_name} (music group)", artist_name):
-        title = _wiki_api_search(cand, lang=lang)
-        if title:
-            url = f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
-            return title, url
-    return None, None
+    hints = [h for h in (hints or []) if h]
+    base = name.strip()
+    qset = [
+        base,
+        f'{base} (cantor)' if lang == "pt" else f"{base} (singer)",
+        f"{base} música" if lang == "pt" else f"{base} music",
+    ]
+    for h in hints[:3]:
+        qset.append(f"{base} {h}")
+    target = _norm_txt(base)
+    best = (0.0, None)
+    for q in qset:
+        for cand in _wiki_api_search(q, lang=lang, limit=6):
+            title = str(cand.get("title") or "").strip()
+            snippet = _norm_txt(cand.get("snippet") or "")
+            tnorm = _norm_txt(title)
+            score = 0.0
+            if tnorm == target: score += 3.0
+            if target in tnorm: score += 1.5
+            score += sum(0.5 for h in hints if _norm_txt(h) in snippet)
+            if score > best[0]:
+                best = (score, (title, f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"))
+    return best[1] if best[0] > 0 else (None, None)
 
-import re
+
+def _norm_txt(s: str) -> str:
+    # normaliza texto p/ comparação: lower, sem acentos, espaços compactados
+    import unicodedata
+    s = (s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", s)
+
+
+# --- NOVO: resumo curto (2–3 frases) da Wikipédia ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def _wiki_summary_from_title(title: str, lang: str = "en") -> str:
+    """Obtém 2–3 frases do resumo da Wikipédia para 'title'."""
+    try:
+        url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title.replace(' ', '%20')}"
+        r = requests.get(
+            url,
+            timeout=8,
+            headers={
+                "accept": "application/json",
+                "user-agent": "music4all/1.0 (+https://example.com)",
+            },
+        )
+        if r.status_code != 200:
+            return ""
+        data = r.json()
+        if (data.get("type") or "").lower() == "disambiguation":
+            return ""
+        txt = (data.get("extract") or "").strip()
+        if not txt:
+            return ""
+        import re as _re
+        sents = _re.split(r"(?<=[.!?])\s+", txt)
+        return " ".join(sents[:3])
+    except Exception:
+        return ""
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _artist_wiki_blurb(name: str, hints: list[str] | None = None, lang: str = "en") -> tuple[str, str]:
+    """Devolve (blurb, url) para o artista a partir da Wikipédia."""
+    title, url = resolve_wikipedia_title(name, lang=lang, hints=hints or [])
+    if not title:
+        return "", ""
+    txt = _wiki_summary_from_title(title, lang=lang)
+    if not url:
+        url = f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
+    return txt, url
+
 
 def _parse_spotify_playlist_id(s: str | None) -> str | None:
     if not s:
@@ -78,6 +149,7 @@ def _parse_spotify_playlist_id(s: str | None) -> str | None:
     if re.fullmatch(r'[A-Za-z0-9]+', s):
         return s  # parece ID
     return None
+
 
 # =========================
 #   Wildcards & Search
@@ -203,7 +275,7 @@ def _extract_user_query() -> str:
     return ""
 
 
-# ======== NEW: genre-only support ========
+# ======== Genre-only support (para quando o campo Artist está vazio) ========
 def _parse_genre_only(raw_q: str) -> str | None:
     """
     If raw_q is exactly of the form genre:"<value>", return <value>; else None.
@@ -238,7 +310,6 @@ def search_artists_by_genre(token: str, genre: str, max_pages: int = 4) -> list[
             if any((g in gg) or (gg in g) for gg in glist):
                 out.append(a)
     return out
-# ========================================
 
 
 # =========================
@@ -274,16 +345,14 @@ def cached_fetch_all_albums(token: str, artist_id: str):
 # =========================
 #   UI
 # =========================
+
 def render_spotify_results(token: str):
-    genre_only = (
-        st.session_state.get("genre_only")
-        or st.session_state.get("spotify_genre_free")
-        or None
-    )
     """
-    Artist search with user-controlled wildcards:
-      'Genesis'   (exact) | '*Genesis' (suffix) | 'Genesis*' (prefix) | '*Genesis*' (contains)
-    Scans multiple API pages before applying local filter.
+    Pesquisa de artistas **prioriza o campo Artist**:
+      • Se o utilizador escreveu em Artist → pesquisa por ARTISTA (sem '*' automáticos).
+      • Se Artist estiver vazio e existir género → pesquisa por GÉNERO.
+      • Se ambos vazios mas a query for genre:"…" → trata como GÉNERO.
+      • Caso contrário → pesquisa por nome (wildcard permitido pelo utilizador).
     """
     mobile = ui_mobile()
 
@@ -294,112 +363,128 @@ def render_spotify_results(token: str):
     if no_artist and no_seed and no_free:
         st.session_state.pop("query_effective", None)
 
-    # 1) Query (prioriza query_effective para não “sujar” o campo Artist)
-   
-    raw_q = st.session_state.get("query_effective") or _extract_user_query()
+    # 1) Lê o que o utilizador acabou de escrever (prioridade absoluta)
+    raw_q_direct = _extract_user_query().strip()
+    # fallback para algum 'query_effective' herdado de cliques / atalhos
+    raw_q = raw_q_direct or (st.session_state.get("query_effective") or "").strip()
     if not raw_q:
-        return
+        return  # nada a pesquisar ainda
 
-    # 1b) Detectar query explícita de género: genre:"<valor>"
-    explicit_genre = _parse_genre_only(raw_q)   # importado como parse_genre_only do serviço
-    if explicit_genre:
-        genre_only = explicit_genre
-    elif not genre_only:
-        # 1c) Se não veio explícito, coerção “inteligente” (ex.: "Fado")
-        forced_genre = coerce_query_to_genre_if_applicable(raw_q, token=TOKEN)
-        if forced_genre:
-            genre_only = forced_genre
+    # 2) Inputs da UI
+    name_typed = raw_q_direct                      # ← usa SEMPRE o que o utilizador escreveu
+    genre_seed = (st.session_state.get("genre_input") or "").strip()
+    genre_free = (st.session_state.get("genre_free_input") or "").strip()
+    genre_filter = genre_free or genre_seed
 
-    # 2) Search
-    per_page = 20
-    if genre_only:
-        all_matched = search_artists_by_genre(token, genre_only, max_pages=20) or []
-        core_q, mode_q = "", "genre"
-    else:
-        # --- COMBINAÇÃO (artist + genre): interseção por ID ---
-       # --- COMBINAÇÃO (artist + genre): interseção por ID + fallback de substring nos géneros do artista ---
-        name_typed   = (st.session_state.get("query") or "").strip()
-        genre_seed   = (st.session_state.get("genre_input") or "").strip()           # da selectbox (seeds)
-        genre_free   = (st.session_state.get("genre_free_input") or "").strip()      # texto livre
-        genre_filter = genre_free or genre_seed
+    # 3) Termo de género (apenas se NÃO houver nome digitado)
+    explicit_genre = _parse_genre_only(raw_q_direct)
+    coerced_genre  = None
+    if not raw_q_direct:
+        # só tentamos coerção quando o utilizador não escreveu nada
+        try:
+            coerced_genre = coerce_query_to_genre_if_applicable(raw_q, token=token)
+        except Exception:
+            coerced_genre = None
+    genre_term = explicit_genre or coerced_genre or genre_filter
 
-        if name_typed and genre_filter:
-            # 1) pesquisa por nome (wildcard)
-            by_name  = search_artists_wildcard(token, name_typed, max_pages=4) or []
-            # 2) pesquisa por género (texto — funciona para seeds e free text)
-            by_genre = search_artists_by_genre(token, genre_filter, max_pages=4) or []
+    # 4) Helpers de normalização/aliases (bridge opcional)
+    try:
+        _norm_label = norm_label
+        _resolve_aliases = resolve_genre_canon_and_aliases
+    except Exception:
+        def _norm_label(s: str) -> str:
+            import unicodedata, re as _re
+            s0 = (s or "").strip().lower()
+            s0 = unicodedata.normalize("NFKD", s0).encode("ascii","ignore").decode("ascii")
+            return _re.sub(r"\s+", " ", s0)
+        def _resolve_aliases(label: str):
+            n = _norm_label(label)
+            return n, [n]
 
-            ids = {a.get("id") for a in by_genre if isinstance(a, dict)}
+    def _tokenize_label(s: str) -> set[str]:
+        return {t for t in re.split(r"[^\w]+", _norm_label(s)) if t}
 
-            # 3) Fallback: se o género veio da *selectbox* (seed), aceitar artistas cujo 'genres[]' contenha o seed
-            allowed_ids = set(ids)
-            if genre_seed:
-                seed_norm = genre_seed.casefold()
-                for a in by_name:
-                    try:
-                        artist_genres = [g.casefold() for g in (a.get("genres") or [])]
-                    except Exception:
-                        artist_genres = []
-                    if any(seed_norm in g for g in artist_genres):
-                        allowed_ids.add(a.get("id"))
+    def _accept_by_alias_tokens(artist: dict, aliases_norm: list[str]) -> bool:
+        if not artist:
+            return False
+        aliases = set(aliases_norm)
+        gl = artist.get("genres") or []
+        for gg in gl:
+            toks = _tokenize_label(gg)
+            if aliases & toks:
+                return True
+        return False
 
-            # 4) Resultado = artistas por nome ∩ (IDs por género OU match-substring)
-            all_matched = [a for a in by_name if isinstance(a, dict) and a.get("id") in allowed_ids]
-            core_q, mode_q = _parse_wildcard(name_typed)
+    # 5) Pesquisa (ARTISTA → GÉNERO → fallback)
+    if name_typed:
+        by_name = search_artists_wildcard(token, name_typed, max_pages=4) or []
+
+        core = name_typed.strip()
+
+        # 1) match literal estrito (case-insensitive, MAS sem remover acentos)
+        def _eq_literal(a):
+            return (a.get("name", "").strip().lower() == core.lower())
+
+        exacts = [a for a in by_name if _eq_literal(a)]
+
+        if exacts:
+            all_matched = exacts
+            mode_caption = "🔎 Mode: artist name (exact)"
         else:
-            # comportamento antigo (só artista, ou só género já tratado acima)
-            all_matched = search_artists_wildcard(token, raw_q, max_pages=4) or []
-            core_q, mode_q = _parse_wildcard(raw_q)
+            # 2) fallback: fronteira de palavra (evita “qualquer sítio no meio”)
+            import re as _re
+            pat = _re.compile(rf"\b{_re.escape(core)}\b", flags=_re.IGNORECASE)
+            boundary = [a for a in by_name if pat.search(a.get("name", ""))]
 
-        # colapso de homónimos (exact) → escolhe o mais seguido
-        if mode_q == "exact" and all_matched:
-            best_by_name = {}
-            for a in all_matched:
-                if not isinstance(a, dict):
-                    continue
-                name_key = (a.get("name") or "").strip().casefold()
-                followers = ((a.get("followers") or {}).get("total") or 0)
-                cur_best = best_by_name.get(name_key)
-                if cur_best is None or followers > ((cur_best.get("followers") or {}).get("total") or 0):
-                    best_by_name[name_key] = a
-            all_matched = list(best_by_name.values())
-            all_matched.sort(key=lambda x: -((x.get("followers") or {}).get("total") or 0))
- #-----------------------------------
-    # ---- PAGINAÇÃO ----
-    # mantém per_page=20 definido acima; aqui só fazemos override para género
-    # ---- PAGINAÇÃO (10 por página para todos os casos) ----
+            if boundary:
+                all_matched = boundary
+                mode_caption = "🔎 Mode: artist name (word boundary)"
+            else:
+                # 3) último recurso: o que a API devolveu (pode ter nomes “parecidos”)
+                all_matched = by_name
+                mode_caption = "🔎 Mode: artist name (broad)"
+
+        # filtro opcional por género (se o utilizador preencheu)
+        if genre_term:
+            gnorm = genre_term.lower()
+            all_matched = [a for a in all_matched if any(gnorm in g.lower() for g in (a.get("genres") or []))]
+            mode_caption += f" ∩ genre"
+
+#...................
+    elif genre_term:
+        canon, aliases_norm = _resolve_aliases(genre_term)
+        base = search_artists_by_genre(token, genre_term, max_pages=4) or []
+        all_matched = [a for a in base if _accept_by_alias_tokens(a, aliases_norm)]
+        mode_caption = f"🔎 Mode: genre «{canon}» · artists: {len(all_matched)}"
+
+    else:
+        all_matched = search_artists_wildcard(token, raw_q, max_pages=4) or []
+        mode_caption = "🔎 Mode: artist name"
+
+    # 6) Ordenar e paginar
     all_matched.sort(key=lambda a: -((a.get("followers") or {}).get("total") or 0))
-    per_page_local = 10
-
-        # ... (o teu código constrói all_matched aqui em cima)
-
-    # ---- Paginação (o cabeçalho “Pag: N/M | Prev | Next” vem do spotify_ui.render_pagination_controls) ----
+    per_page = 10
     total_filtered = len(all_matched)
     total_pages = (total_filtered - 1) // per_page + 1 if total_filtered else 0
 
     page = int(st.session_state.get("page", 1) or 1)
-    if total_pages == 0:
-        page = 0
-    else:
-        page = max(1, min(page, total_pages))
-
-    # sincroniza com o UI e expõe o total
+    page = 0 if total_pages == 0 else max(1, min(page, total_pages))
     st.session_state["page"] = page
     st.session_state["page_input"] = page
     st.session_state["sp_total_pages"] = max(total_pages, 1)
 
-    # fatia da página
     start = (page - 1) * per_page if total_filtered else 0
-    end = start + per_page
+    end   = start + per_page
     items = all_matched[start:end] if total_filtered else []
 
-    
+    if mode_caption:
+        st.caption(mode_caption)
 
-
-#----------------------------------------------------
     if not items:
-        if genre_only:
-            st.info(f'No artists found for genre "{genre_only}".')
+        if name_typed:
+            st.info(f'No artists found for "{name_typed}".')
+        elif genre_term:
+            st.info(f'No artists found for genre "{genre_term}".')
         else:
             st.info("No artist matches your pattern. Try adjusting the * (e.g., Genesis, Yes*, *Yes).")
         return
@@ -419,7 +504,11 @@ def render_spotify_results(token: str):
                 st.write(f"**Genres:** {', '.join(genres_list) if genres_list else '—'}")
 
                 spotify_url = (artist.get("external_urls") or {}).get("spotify")
-                wiki_title, wiki_url = resolve_wikipedia_title(artist.get("name"), lang="en")
+                wiki_title, wiki_url = resolve_wikipedia_title(
+                    artist.get("name", ""),
+                    lang="en",
+                    hints=(artist.get("genres") or [])[:3],
+                )
                 links = []
                 if spotify_url:
                     links.append(f"[Open in Spotify]({spotify_url})")
@@ -430,6 +519,19 @@ def render_spotify_results(token: str):
                 else:
                     st.write(f"Followers: {followers_fmt}")
 
+                # --- NOVO: About (resumo curto da Wikipédia) ---
+                try:
+                    bio_en, bio_url = _artist_wiki_blurb(
+                        artist.get("name", ""),
+                        hints=genres_list,
+                        lang="en",
+                    )
+                except Exception:
+                    bio_en, bio_url = "", ""
+                if bio_en:
+                    st.markdown(f"**About:** {bio_en}")
+                    st.caption(f"[Wikipedia]({bio_url})")
+
                 # -------- Actions (one nesting level only)
                 act_play, act_thisis, act_radio = st.columns([1, 1, 1])
 
@@ -438,7 +540,6 @@ def render_spotify_results(token: str):
                     embed_key = f"artist_{artist['id']}_embed"
                     if st.button("▶", key=f"btn_{artist['id']}_embed", help="Embed artist player"):
                         st.session_state[embed_key] = True
-                        #st.rerun()
                     if st.session_state.get(embed_key):
                         try:
                             embed_spotify("artist", artist["id"], height=80)
@@ -446,7 +547,6 @@ def render_spotify_results(token: str):
                             pass
 
                 # estado único por artista: 'thisis' | 'radio' | None
-                # --- estado único por artista: 'thisis' | 'radio' | None ---
                 open_key        = f"artist_open_panel_{artist['id']}"
                 thisis_data_key = f"artist_thisis_result_{artist['id']}"
                 radio_data_key  = f"artist_radio_result_{artist['id']}"
@@ -466,7 +566,6 @@ def render_spotify_results(token: str):
                         if curr == "thisis":
                             st.session_state[open_key] = None  # toggle off
                         else:
-                            # abre THIS IS e fecha RADIO
                             try:
                                 pl = find_artist_this_is_playlist(
                                     token=token,
@@ -485,7 +584,6 @@ def render_spotify_results(token: str):
                         if curr == "radio":
                             st.session_state[open_key] = None  # toggle off
                         else:
-                            # abre RADIO e fecha THIS IS
                             try:
                                 pl = find_artist_radio_playlist(
                                     token=token,
@@ -497,7 +595,7 @@ def render_spotify_results(token: str):
                             st.session_state[radio_data_key] = pl if pl else {"type": "none"}
                             st.session_state[open_key] = "radio"
 
-                # --- RENDER consolidado: só o painel ativo aparece ---
+                # --- Painel ativo (This Is / Radio) ---
                 panel = st.session_state.get(open_key)
 
                 if panel == "thisis":
@@ -546,7 +644,6 @@ def render_spotify_results(token: str):
                             )
                             if st.button("Use selected", key=f"apply_thisis_{artist['id']}"):
                                 choice = cands[idx]
-                                # guardar e renderizar já
                                 st.session_state[thisis_data_key] = choice
                                 st.session_state[open_key] = "thisis"
                                 _pl = choice
@@ -554,7 +651,6 @@ def render_spotify_results(token: str):
                                 pid = (_pl or {}).get("id")
                                 pname = (_pl or {}).get("name") or f"This Is {artist.get('name','')}"
 
-                        # se o utilizador acabou de escolher, renderiza
                         if url or pid:
                             if url:
                                 st.markdown(f'[Open “{pname}” on Spotify]({url})')
@@ -575,7 +671,6 @@ def render_spotify_results(token: str):
                                         st.markdown(f"{i}. [{c.get('name')}]({link}){owner_tag}")
                                     with cols[1]:
                                         if st.button("Use this", key=f"use_thisis_{artist['id']}_{i}"):
-                                            # guardar override e render imediato
                                             st.session_state[OV_KEY].setdefault(artist['id'], {})["thisis"] = c
                                             st.session_state[f"artist_thisis_result_{artist['id']}"] = c
                                             st.session_state[f"artist_open_panel_{artist['id']}"] = "thisis"
@@ -586,8 +681,6 @@ def render_spotify_results(token: str):
                                                 r = playlist_artist_ratio(token, c.get("id"), artist['id'], max_items=80)
                                                 st.toast(f"{int(round(r*100))}% of tracks from this artist", icon="🎵")
 
-
-                #--------------------------------------------    
                 elif panel == "radio":
                     _pl = st.session_state.get(radio_data_key)
                     if _pl is None:
@@ -671,8 +764,6 @@ def render_spotify_results(token: str):
                                                 r = playlist_artist_ratio(token, c.get("id"), artist['id'], max_items=80)
                                                 st.toast(f"{int(round(r*100))}% of tracks from this artist", icon="📻")
 
-
-
             # -------- Column B: image
             with col_b:
                 imgs = artist.get("images") or []
@@ -695,18 +786,37 @@ def render_spotify_results(token: str):
 
             years = sorted([y for y in {_year(x) for x in releases} if y])
 
-            st.markdown("**📖 Overview (Spotify releases):**")
-            if years:
-                st.write(f"• First release on Spotify: {years[0]}")
-                st.write(f"• Latest release on Spotify: {years[-1]}")
-            else:
-                st.write("• First/Latest release: —")
-            st.write(
-                f"• Releases: {len(releases)}  |  "
-                f"Albums: {len(albums)}  |  "
-                f"Singles/EPs: {len(singles)}  |  "
-                f"Compilations: {len(compilations)}"
-            )
+            # Overview (esq.) + About (dir.) lado a lado
+            col_over, col_about = st.columns([1.8, 1])
+
+            with col_over:
+                st.markdown("**📖 Overview (Spotify releases):**")
+                if years:
+                    st.write(f"• First release on Spotify: {years[0]}")
+                    st.write(f"• Latest release on Spotify: {years[-1]}")
+                else:
+                    st.write("• First/Latest release: —")
+                st.write(
+                    f"• Releases: {len(releases)}  |  "
+                    f"Albums: {len(albums)}  |  "
+                    f"Singles/EPs: {len(singles)}  |  "
+                    f"Compilations: {len(compilations)}"
+                )
+
+            with col_about:
+                st.markdown("**ℹ️ About**")
+                # tenta EN; se falhar, tenta PT
+                genres_list = artist.get("genres") or []
+                bio, bio_url = _artist_wiki_blurb(artist.get("name", ""), hints=genres_list, lang="en")
+                if not bio:
+                    bio, bio_url = _artist_wiki_blurb(artist.get("name", ""), hints=genres_list, lang="pt")
+                if bio:
+                    st.write(bio)
+                    if bio_url:
+                        st.caption(f"[Wikipedia]({bio_url})")
+                else:
+                    st.caption("—")
+
 
             # -------- Albums panel (top-level columns inside expander)
             cbtn, calist = st.columns([1, 2]) if not mobile else st.columns([1, 1])
@@ -725,7 +835,6 @@ def render_spotify_results(token: str):
                             compilations, key=lambda x: x.get("release_date", ""), reverse=True
                         )[:20],
                     }
-                    #st.rerun()
 
             with calist:
                 if st.session_state.get("open_albums_for") == artist["id"]:
@@ -751,9 +860,7 @@ def render_spotify_results(token: str):
                                 format_func=lambda i: labels[i],
                                 key=f"select_album_idx_{artist['id']}",
                             )
-                            st.session_state[
-                                f"selected_album_id_{artist['id']}"
-                            ] = ids[sel]
+                            st.session_state[f"selected_album_id_{artist['id']}"] = ids[sel]
 
                         show_all = st.toggle(
                             "All releases (albums / singles / compilations)",
@@ -770,9 +877,7 @@ def render_spotify_results(token: str):
                                     url = (it.get("external_urls") or {}).get("spotify")
                                     name = it.get("name", "—")
                                     if url:
-                                        out.append(
-                                            f'<li><a href="{url}" target="_blank">{name}</a> ({y})</li>'
-                                        )
+                                        out.append(f'<li><a href="{url}" target="_blank">{name}</a> ({y})</li>')
                                     else:
                                         out.append(f"<li>{name} ({y})</li>")
                                 out.append("</ul>")
@@ -785,19 +890,10 @@ def render_spotify_results(token: str):
                             html += "</div>"
                             st.markdown(html, unsafe_allow_html=True)
 
-                        if st.button(
-                            "Close albums", key=f"close_albums_{artist['id']}_panel"
-                        ):
-                            for k in [
-                                "open_albums_for",
-                                "albums_data",
-                                f"selected_album_id_{artist['id']}",
-                            ]:
+                        if st.button("Close albums", key=f"close_albums_{artist['id']}_panel"):
+                            for k in ["open_albums_for", "albums_data", f"selected_album_id_{artist['id']}"]:
                                 st.session_state.pop(k, None)
-                            #st.rerun()
 
-                    
-                    
                     # RIGHT: tracks of selected album
                     with right:
                         aid = st.session_state.get(f"selected_album_id_{artist['id']}")
@@ -825,7 +921,6 @@ def render_spotify_results(token: str):
                             else:
                                 target_name = dest_choice
 
-                            # (mantemos este botão; retirámos o 'Add selected')
                             if st.button("➕ Add ALL tracks", key=f"add_all_{aid}__top"):
                                 rows_all = fetch_album_tracks_api(token, aid) or []
                                 rows = []
@@ -849,7 +944,6 @@ def render_spotify_results(token: str):
                                 if rows:
                                     add_tracks_to_playlist(target_name, rows)
                                     st.success(f"Added {len(rows)} tracks to '{target_name}'.")
-                                    # Marcar todas como selecionadas visualmente
                                     for r in rows:
                                         st.session_state[f"chk_{aid}_{r['id']}"] = True
                                 else:
@@ -875,12 +969,10 @@ def render_spotify_results(token: str):
                                     }
                                 )
 
-                            # Guarda simples para não duplicar adições ao alternar a checkbox
                             added_key = f"auto_added_ids__{target_name}"
                             if added_key not in st.session_state:
                                 st.session_state[added_key] = set()
 
-                            # Caixa scrollável + mensagem topo
                             st.markdown(
                                 "<div style='max-height:50vh; overflow:auto; border:1px solid #ddd; padding:8px; border-radius:8px'>",
                                 unsafe_allow_html=True,

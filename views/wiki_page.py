@@ -103,7 +103,7 @@ def render_wikipedia_page(token: str):
         st.info("To enable 'Wikipedia styles', place a CSV named 'lista_artistas.csv' (or 'wikipedia_styles.csv') with columns Artista;Genero;URL in the app folder.")
         return
 
-    st.subheader("📚 Wikipedia styles — CSV list (fast)")
+    st.subheader("📚 Wikipedia - Styles")
 
     # === Botões de topo (como no Spotify): Search / Reset ===
     b1, b2 = st.columns([0.12, 0.18])

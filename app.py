@@ -1,118 +1,109 @@
-# app.py — Music4all (views/ structure)
+# app.py — Music & Cinema menu with Radio integrated
+
+from __future__ import annotations
 import os
 import streamlit as st
-from views.influence_map import render_influence_map_page
+
+# ---------- Spotify token ----------
 from services.spotify import get_spotify_token
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+TOKEN = get_spotify_token(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+
+# ---------- Music pages ----------
 from views.spotify.page import render_spotify_page
 from views.wiki_page import render_wikipedia_page
+from views.genres_roots_page import render_genres_page_roots as render_genres_page
 from views.playlists_page import render_playlists_page
-from views.genres_page import render_genres_page
-from views.genealogy_page import render_genealogy_page  
-from views.explore_page import render_explore_page
+#from views.genealogy_page_up_down import render_genealogy_page
+#from views.influence_map import render_influence_map_page
 
-# NOTA: não importamos radio_debug_page aqui; só importamos dentro do ramo se DEV_DEBUG=True
+# >>> NEW: Radio page (root-level radio.py). If you place it under views/radio/page.py,
+# change this import to:  from views.radio.page import render_radio_page
+from views.radio.radio import render_radio_page
 
-# ---------------------------
-#  Modo de desenvolvimento
-# ---------------------------
-DEV_DEBUG = False  # <<< coloca True para mostrar a página "📻 Radio (debug)"
-
-st.set_page_config(
-    page_title="Music4all",
-    page_icon="🎵",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-st.title("🎵 Music4all")
-
-# Toggles visíveis por baixo do título
-c_mob, c_ap = st.columns([1, 1])
-with c_mob:
-    st.toggle("📱 Mobile layout", key="ui_mobile")
-with c_ap:
-    st.toggle("🔊 Audio previews", key="ui_audio_preview")
-
-# Secrets -> env
-for _k in ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "DISCOGS_USER_AGENT", "DISCOGS_TOKEN"]:
+# ---------- Cinema ----------
+def _resolve_cinema_runner():
     try:
-        if _k in st.secrets and st.secrets[_k]:
-            os.environ[_k] = str(st.secrets[_k])
-    except Exception:
-        pass
+        from cinema.page import render_cinema_page as _cin
+        def run(section="Movies"):
+            try:
+                return _cin(section=section)
+            except TypeError:
+                return _cin()
+        return run
+    except Exception as e:
+        def run(section="Movies", _e=e):
+            st.error(f"Cinema page not available: {_e}")
+        return run
 
-CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+render_cinema = _resolve_cinema_runner()
 
-TOKEN = get_spotify_token(CLIENT_ID, CLIENT_SECRET)
-if not TOKEN:
-    st.error("❌ Não foi possível autenticar na API do Spotify.")
-    st.stop()
+# ---------- Page setup ----------
+st.set_page_config(page_title="Music & Cinema", page_icon="🎛️", layout="wide")
+st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-# ---------------------------
-#  Top nav (radio horizontal)
-# ---------------------------
-# Lista de tabs (pode ser alterada dependendo do modo de desenvolvimento)
-# base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', '🧬 Genealogia',
-#              '🎶 Playlists', '🗺️ Influence map', '🧩 Genre map']  
-# base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', 
-#              '🎶 Playlists', '🧬 Genealogy','🗺️ Influence map']  
-base_tabs = ['🎧 Spotify', '📚 Wikipedia', '🧭 Genres', 
-             '🎶 Playlists', '🧬 Genealogy','🗺️ Influence map',"🔎 Explore"]  
-
-tabs = base_tabs + ['📻 Radio (debug)'] if DEV_DEBUG else base_tabs
-
-# garantir um valor inicial coerente
-if 'active_tab' not in st.session_state:
-    st.session_state['active_tab'] = tabs[0]
-# se o valor antigo já não existir (p.ex. DEV_DEBUG desligado), forçar primeiro tab
-if st.session_state['active_tab'] not in tabs:
-    st.session_state['active_tab'] = tabs[0]
-
-# escolher tab
-prev = st.session_state.get('active_tab', tabs[0])
-if prev not in tabs:
-    prev = tabs[0]
-
-active_tab = st.radio(
-    'Sections',
-    tabs,
-    index=tabs.index(prev),
+# =========================================================
+# Row 1 — domain selector
+# =========================================================
+domain = st.radio(
+    label="domain",
+    options=["🎵 Music", "🎬 Cinema"],
     horizontal=True,
-    key='active_tab',
-    label_visibility='collapsed',
+    key="ui_domain",
+    label_visibility="collapsed",
 )
 
-# ---------------------------
-#  Router
-# ---------------------------
-if active_tab == '🎧 Spotify':
-    render_spotify_page(TOKEN, CLIENT_ID, CLIENT_SECRET)
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-elif active_tab == '📚 Wikipedia':
-    render_wikipedia_page(TOKEN)
+# =========================================================
+# Row 2 — submenu per domain
+# =========================================================
+if domain.endswith("Music"):
+    music_labels = [
+        "🎧 Spotify",        
+        "🎼 Playlists",
+        "📻 Radio",          # <<< NEW
+        "🧭 Genres",
+        "📚 Wikipedia",
+        #"🧬 Genealogy",
+        #"🗺️ Influence map",
+    ]
+    music_choice = st.radio(
+        label="music_submenu",
+        options=music_labels,
+        horizontal=True,
+        key="ui_music_submenu",
+        label_visibility="collapsed",
+    )
+    selected = music_choice.split(" ", 1)[1] if " " in music_choice else music_choice
 
-elif active_tab == '🧭 Genres':
-    render_genres_page()
-    
-elif active_tab == '🧬 Genealogy':         # ← NOVO
-    render_genealogy_page()
+    st.markdown("---")
+    if selected == "Spotify":
+        render_spotify_page(TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+    elif selected == "Radio":          # <<< NEW
+        render_radio_page()
+    elif selected == "Wikipedia":
+        render_wikipedia_page(TOKEN)
+    elif selected == "Genres":
+        render_genres_page()
+    elif selected == "Playlists":
+        render_playlists_page()
+    # elif selected == "Genealogy":
+    #     render_genealogy_page()
+    # elif selected == "Influence map":
+    #     render_influence_map_page()
 
-elif active_tab == '🗺️ Influence map':
-    render_influence_map_page()
+else:
+    cinema_labels = ["🍿 Movies", "📺 Series", "🎼 Soundtracks"]
+    cinema_choice = st.radio(
+        label="cinema_submenu",
+        options=cinema_labels,
+        horizontal=True,
+        key="ui_cinema_submenu",
+        label_visibility="collapsed",
+    )
+    section = cinema_choice.split(" ", 1)[1] if " " in cinema_choice else cinema_choice
 
-
-# No selector de páginas:
-elif active_tab == "🔎 Explore":
-    render_explore_page()
-
-# elif active_tab == '🧩 Genre map':
-#     from views.genre_map_auto import render_genre_map_page
-#     render_genre_map_page()
-
-elif DEV_DEBUG and active_tab == '📻 Radio (debug)':
-    from views.radio_debug_page import render_radio_debug_page
-    render_radio_debug_page(TOKEN)
-
-else:  # '🎶 Playlists'
-    render_playlists_page()
-
+    st.markdown("---")
+    render_cinema(section=section)

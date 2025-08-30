@@ -1,15 +1,17 @@
-# views/spotify_page.py
+# views/spotify/page.py
+
 import streamlit as st
 
 # módulos existentes do teu projeto
 from services.spotify import load_genres_csv
-from services.spotify.genres import fetch_spotify_genre_seeds  # se tiveres este helper
+from services.spotify.genres import fetch_spotify_genre_seeds  # opcional: se existir
 from .components.legacy_ui import (
     render_spotify_filters,
     render_top_action_buttons_spotify,
     render_pagination_controls,
 )
 from .results import render_spotify_results
+from views.spotify.results import render_spotify_results
 
 
 def render_spotify_page(token: str, client_id: str, client_secret: str):
@@ -23,7 +25,7 @@ def render_spotify_page(token: str, client_id: str, client_secret: str):
     st.subheader("🎧 Spotify")
     render_top_action_buttons_spotify()  # botões pequenos ao lado do título
 
-    # 1) tentar buscar géneros à API do Spotify (se não tiveres, comenta a linha seguinte)
+    # 1) tentar buscar géneros à API do Spotify (se não tiveres, captura exceção e usa CSV)
     try:
         spotify_genres = fetch_spotify_genre_seeds(token) or (load_genres_csv() or [])
     except Exception:

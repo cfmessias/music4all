@@ -12,7 +12,7 @@ import os
 import re
 from collections import defaultdict, deque
 from typing import Dict, List, Set, Tuple
-
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -158,6 +158,44 @@ def _bfs_down_labels(adj: Dict[str, Set[str]], root: str, depth: int):
     return ordered, edges, level
 
 
+def _build_reverse_adjacency(adj: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
+    """child -> {parents} a partir de Parent -> {children}."""
+    rev: Dict[str, Set[str]] = defaultdict(set)
+    for parent, childs in adj.items():
+        for c in childs:
+            if c:
+                rev[canonical_name(c)].add(canonical_name(parent))
+    return rev
+
+
+def _bfs_up_labels(adj_up: Dict[str, Set[str]], root: str, depth: int):
+    """
+    BFS 'para cima' (upstream), com níveis negativos:
+    root = 0; pais diretos = -1; avós = -2; ...
+    As arestas continuam orientadas Parent → Child (esquerda → direita).
+    """
+    root = canonical_name(root)
+    nodes = {root}
+    edges: List[Tuple[str, str]] = []
+    level: Dict[str, int] = {root: 0}
+    q = deque([root])
+
+    while q:
+        u = q.popleft()
+        if abs(level[u]) >= depth:
+            continue
+        for p in sorted(adj_up.get(u, set()), key=str.lower):
+            p = canonical_name(p)
+            edges.append((p, u))  # parent → child
+            if p not in nodes:
+                nodes.add(p)
+                level[p] = level[u] - 1
+                q.append(p)
+
+    ordered = sorted(nodes, key=lambda n: (level[n], n.lower()))
+    return ordered, edges, level
+
+
 def _path_edges(edges: List[Tuple[str, str]], start: str, target: str) -> List[Tuple[str, str]]:
     """Um caminho dirigido start→target (se existir)."""
     g = defaultdict(list)
@@ -201,67 +239,155 @@ def _branch_sankey(
     """
     Sankey com:
       • níveis distribuídos de forma estável (10%…90%),
-      • ramo root→focus destacado a azul,
-      • restante a cinzento claro; se branch_only=True, linhas fora do ramo ficam invisíveis.
+      • ramo root→focus a azul,
+      • esquerda (upstream) a azul translúcido,
+      • direita (downstream) em cinzentos por ramo de 1º nível,
+      • linhas fininhas via link ‘calibrador’ invisível fora do grafo.
     """
+    import numpy as np
+    from collections import defaultdict, deque as _deque
+
     FONT = "Segoe UI, Roboto, Helvetica, Arial, sans-serif"
     PALETTE = px.colors.qualitative.Set3
-    LINK_GREY = "rgba(0,0,0,0.12)"
+    LINK_GREY = "rgba(0,0,0,0.24)"
     BLUE = "#3b82f6"
+
+    # ---- Calibrar para links finos com par de nós invisíveis isolados ----
+    CALIBRATE_THIN = True
+    DUMMY_A = "\u200b"   # zero-width space
+    DUMMY_B = "\u200c"   # zero-width non-joiner
+    if CALIBRATE_THIN and DUMMY_A not in nodes:
+        nodes = nodes + [DUMMY_A, DUMMY_B]
+        last_lvl = max(level.values()) if level else 0
+        level[DUMMY_A] = last_lvl + 1
+        level[DUMMY_B] = last_lvl + 2
 
     # Índices dos nós
     idx = {n: i for i, n in enumerate(nodes)}
 
     # X por nível com 10% de folga lateral
-    lvls = [level.get(n, 0) for n in nodes]
-    uniq_lvls = sorted(set(lvls))
-    if len(uniq_lvls) <= 1:
-        pos_map = {uniq_lvls[0] if uniq_lvls else 0: 0.5}
-    else:
-        import numpy as np
-        xs_positions = np.linspace(0.10, 0.90, num=len(uniq_lvls))  # 10% … 90%
-        pos_map = {lv: float(x) for lv, x in zip(uniq_lvls, xs_positions)}
-    xs = [pos_map[level.get(n, 0)] for n in nodes]
+    uniq_lvls = sorted({level.get(n, 0) for n in nodes})
+    pos_map = {uniq_lvls[0] if uniq_lvls else 0: 0.5} if len(uniq_lvls) <= 1 else {
+        lv: float(x) for lv, x in zip(uniq_lvls, np.linspace(0.10, 0.90, num=len(uniq_lvls)))
+    }
+    xs = [pos_map.get(level.get(n, 0), 0.5) for n in nodes]
 
-    # Cores (nós do caminho a azul)
+    # Distribuição vertical por nível (evita nós encavalitados)
+    DUMMIES = {DUMMY_A, DUMMY_B} if CALIBRATE_THIN else set()
+    ys_map = {}
+    for lv in uniq_lvls:
+        col = [n for n in nodes if n not in DUMMIES and level.get(n, 0) == lv]
+        if not col:
+            continue
+        ys_lv = np.linspace(0.20, 0.80, num=len(col))  # ajusta 0.20..0.80 conforme preferires
+        for n, y in zip(sorted(col, key=str.lower), ys_lv):
+            ys_map[n] = float(y)
+    for d in DUMMIES:
+        ys_map[d] = 0.5  # dummys ao centro
+    ys = [ys_map.get(n, 0.5) for n in nodes]
+
+    # Cores de nós (o caminho a azul; dummys invisíveis)
     reps = (len(nodes) // len(PALETTE)) + 1
     ncolors = (PALETTE * reps)[: len(nodes)]
 
+    # ---- Mapa do "primeiro filho" (first-hop) para o lado direito ----
+    children_map = defaultdict(list)
+    for a, b in edges:
+        if level.get(a, 0) >= 0 and level.get(b, 0) > 0:
+            children_map[a].append(b)
+
+    firsthop = {}
+    for child in children_map.get(root, []):
+        firsthop[child] = child
+        dq = _deque([child])
+        while dq:
+            u = dq.popleft()
+            for v in children_map.get(u, []):
+                if v not in firsthop:
+                    firsthop[v] = firsthop[u]
+                    dq.append(v)
+
+    # Tons por ramo (direita)
+    TONE_ROOT_DIRECT   = "rgba(0,0,0,0.22)"
+    TONE_DARK_WAVE     = "rgba(0,0,0,0.34)"
+    TONE_ETHEREAL_WAVE = "rgba(0,0,0,0.28)"
+    BRANCH_TONES = {
+        canonical_name("Dark wave"):     TONE_DARK_WAVE,
+        canonical_name("Ethereal wave"): TONE_ETHEREAL_WAVE,
+    }
+
+    BLUE_LEFT = "rgba(59,130,246,0.55)"  # azul translúcido p/ upstream
+
+    # Caminho root→focus (para pintar nós/links a azul)
     path = set(_path_edges(edges, root, focus))
     path_nodes = {root, focus} | {a for a, _ in path} | {b for _, b in path}
     for i, n in enumerate(nodes):
         if n in path_nodes:
             ncolors[i] = BLUE
+    if CALIBRATE_THIN:
+        ncolors[idx[DUMMY_A]] = "rgba(0,0,0,0)"
+        ncolors[idx[DUMMY_B]] = "rgba(0,0,0,0)"
 
     # Ligações
     src, dst, val, lcol = [], [], [], []
     for a, b in edges:
-        if a in idx and b in idx:
-            src.append(idx[a])
-            dst.append(idx[b])
-            val.append(1)
-            if (a, b) in path:
-                lcol.append(BLUE)
+        if a not in idx or b not in idx:
+            continue
+        src.append(idx[a]); dst.append(idx[b]); val.append(1)
+
+        is_left_edge = (level.get(a, 0) < 0) and (level.get(b, 0) <= 0)
+        on_path = (a, b) in path
+
+        if on_path:
+            lcol.append(BLUE)
+        elif is_left_edge:
+            lcol.append(BLUE_LEFT)
+        else:
+            if level.get(a, 0) == 0 and level.get(b, 0) == 1:
+                lcol.append(TONE_ROOT_DIRECT)  # root → filho direto
+            elif level.get(a, 0) >= 0 and level.get(b, 0) > 0:
+                fh = canonical_name(firsthop.get(b) or firsthop.get(a) or "")
+                lcol.append(BRANCH_TONES.get(fh, LINK_GREY))
             else:
                 lcol.append("rgba(0,0,0,0)" if branch_only else LINK_GREY)
 
-    # Proporções: em mobile mais fino/baixo
+    # Link calibrador invisível (não ligado ao grafo real)
+    if CALIBRATE_THIN:
+        CAL_FACTOR = 7                      # ↓ menor = linhas mais grossas
+        src.append(idx[DUMMY_A])
+        dst.append(idx[DUMMY_B])
+        val.append(max(40, CAL_FACTOR * len(edges)))
+        lcol.append("rgba(0,0,0,0)")
+
+    # Proporções / tamanhos
     few = len(nodes) <= 8
     node_thickness = (10 if is_mobile else (12 if few else 20))
     node_pad       = (8  if is_mobile else (10 if few else 18))
-    chart_height   = (500 if is_mobile else (580 if few else 680))
-    font_size      = (13 if is_mobile else 15)
-    hover_size     = (12 if is_mobile else 14)
+
+    # Altura dinâmica (ignora dummies)
+    DUMMIES = {DUMMY_A, DUMMY_B} if CALIBRATE_THIN else set()
+    visible_nodes = [n for n in nodes if n not in DUMMIES]
+    if visible_nodes:
+        uniq_lvls_vis = sorted({level.get(n, 0) for n in visible_nodes})
+        max_per_level = max(sum(1 for n in visible_nodes if level.get(n, 0) == lv) for lv in uniq_lvls_vis)
+    else:
+        max_per_level = 1
+    base_h   = 180 if is_mobile else 280
+    chart_height = int(min(560, max(260, base_h + 28 * max_per_level)))
+
+    font_size  = (13 if is_mobile else 15)
+    hover_size = (12 if is_mobile else 14)
 
     fig = go.Figure(go.Sankey(
         arrangement="fixed",
         node=dict(
             label=nodes,
             x=xs,
+            y=ys,
             pad=node_pad,
             thickness=node_thickness,
             color=ncolors,
-            line=dict(color="rgba(0,0,0,0.25)", width=0.8),
+            line=dict(color="rgba(0,0,0,0)", width=0),  # sem contorno (esconde dummys)
             hovertemplate="%{label}<extra></extra>",
         ),
         link=dict(
@@ -274,7 +400,7 @@ def _branch_sankey(
     ))
 
     fig.update_layout(
-        margin=dict(l=0, r=0, t=6, b=6),
+        margin=dict(l=0, r=0, t=0, b=0),
         height=chart_height,
         font=dict(family=FONT, size=font_size, color="#1f2937"),
         hoverlabel=dict(font_size=hover_size, font_family=FONT),
@@ -301,8 +427,8 @@ def render_genealogy_page():
     with colT1:
         st.title("🧬 Genre Genealogy · Music4all")
 
-    quick = ["Blues", "Jazz", "Rock", "Pop", "Metal", "House",
-             "Funk", "Disco", "Hip-hop", "New Wave", "Synth-pop", "Reggae"]
+    quick = ["Blues", "Jazz", "Rock", "Pop", "Metal", 
+             "Funk",  "New Wave", "Reggae"]
 
     if not is_mobile:
         with colT2:
@@ -327,8 +453,7 @@ def render_genealogy_page():
         return
     labels = _all_labels(children_index)
 
-    # Pesquisa + Select
-   # Apenas o campo de pesquisa
+    # Pesquisa
     st.text_input(
         "Search genre",
         placeholder="Type 2+ letters (e.g., Jazz, Blues, House, Prog Rock…)",
@@ -348,22 +473,12 @@ def render_genealogy_page():
     else:
         genre = ""   # sem root fixo; o utilizador escolhe no Level 1
 
-    # (Opcional) pequena dica quando há ambiguidade
+    # Dica quando há ambiguidade
     if q and not genre and len(matches) > 1:
         st.caption("Refina a pesquisa ou escolhe o ramo em **Level 1**.")
 
-
-    # Sem seleção ainda → ajuda
+    # Sem seleção ainda → mostra ajuda (corrigido: sem st.markdown vazio)
     if not genre:
-        st.markdown(
-            """
-**How to use**
-
-1. Type a genre in **Search genre**; the selectbox shows all matches.
-2. Pick one to see **influences** (upstream), **derivatives** (downstream) and the **branch map**.
-3. In the map you can choose the **depth** (levels below the genre) and select the **branch** step by step.
-            """
-        )
         with st.expander("What can I search?"):
             st.write(
                 "You can search **any music genre or subgenre** you know. "
@@ -372,17 +487,18 @@ def render_genealogy_page():
             )
         return
 
-    # Influences/Derivatives
-    parents_dyn, children_dyn = _neighbors(genre, children_index)
-    extra_edges = _load_extra_edges()
-    if extra_edges:
-        p2, c2 = _neighbors_from_edges(genre, extra_edges)
-    else:
-        p2, c2 = [], []
-    p3, c3 = kb_neighbors(genre)
+    adj    = _build_label_adjacency(children_index)
+    adj_up = _build_reverse_adjacency(adj)
 
-    parents  = _unique_sorted(list(set(parents_dyn)  | set(p2) | set(p3)))
-    children = _unique_sorted(list(set(children_dyn) | set(c2) | set(c3)))
+    # Vizinhos DIRETOS do género selecionado (o que o grafo mostra a 1 nível)
+    parents  = sorted(adj_up.get(genre, set()), key=str.lower)   # esquerda
+    children = sorted(adj.get(genre, set()),     key=str.lower)  # direita
+
+    # ---- contagens diretas (nível 1) ----
+    upstream   = set(parents or [])
+    downstream = set(children or [])
+    n_infl = len(upstream)
+    n_der  = len(downstream)
 
     # Cabeçalho compacto
     b = BLURBS.get(genre, {})
@@ -396,10 +512,10 @@ def render_genealogy_page():
     # Listas
     col_l, col_r = st.columns(2)
     with col_l:
-        st.markdown("#### Influences (upstream)")
+        st.subheader(f"Influences ({n_infl} upstream)")
         st.write("—" if not parents else " • ".join(parents))
     with col_r:
-        st.markdown("#### Derivatives (downstream)")
+        st.subheader(f"Derivatives ({n_der} downstream)")
         st.write("—" if not children else " • ".join(children))
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
@@ -451,17 +567,59 @@ def render_genealogy_page():
 
     branch_only = st.checkbox("Show only the selected branch", value=False, key="gen_branch_only")
 
-    # ----- Construção do grafo e desenho -----
-    nodes, edges, level = _bfs_down_labels(adj, genre, depth)
+    # ----- Limitar géneros com demasiados ramos de 1.º nível -----
+    MAX_FIRST_LEVEL = 30
+    first_children = sorted(adj.get(genre, set()), key=str.lower)
+    too_many = len(first_children) > MAX_FIRST_LEVEL
 
-    # Fallback “1-hop” silencioso: se não há arestas mas existem filhos imediatos,
-    # desenha-se pelo menos root -> filhos (garante gráfico quando o Level 1 tem opções).
+    if too_many and len(path) <= 1:
+        st.info(
+            f"“{genre}” tem {len(first_children)} subgéneros diretos. "
+            "Para manter o gráfico legível, seleciona um subgénero no seletor **Level 1** acima "
+            "ou procura diretamente por um subgénero (ex.: 'Active rock')."
+        )
+        return
+
+    # Se tem muitos ramos e já escolheste um subgénero → mostrar só esse ramo
+    force_branch_only = too_many and len(path) > 1
+
+    # ----- Construção do grafo e desenho -----
+    # Downstream (direita)
+    nodes_ds, edges_ds, level_ds = _bfs_down_labels(adj, genre, depth)
+
+    # Upstream (esquerda) — níveis negativos
+    adj_up = _build_reverse_adjacency(adj)
+    nodes_up, edges_up, level_up = _bfs_up_labels(adj_up, genre, depth)
+
+    # Merge dos dois lados, com o género a nível 0
+    nodes = sorted(set([*nodes_up, *nodes_ds, genre]), key=str.lower)
+    edges = edges_up + edges_ds
+    level = {genre: 0, **level_up, **level_ds}
+
+    # --- Mostrar só o ramo escolhido quando aplicável (muitos ramos ou checkbox) ---
+    selected_first = path[1] if len(path) > 1 else None
+    if (branch_only or force_branch_only) and selected_first:
+        # Reconstroi o lado direito apenas para o subgénero escolhido
+        right_nodes, right_edges, right_level = _bfs_down_labels(
+            adj, selected_first, max(0, depth - 1)
+        )
+        edges = edges_up + [(genre, selected_first)] + right_edges
+        level = {
+            **level_up,
+            genre: 0,
+            selected_first: 1,
+            **{n: l + 1 for n, l in right_level.items()},
+        }
+        nodes = sorted(set([*nodes_up, genre, selected_first, *right_nodes]), key=str.lower)
+
+    # Fallback “1-hop” se não houver arestas
     if not edges:
         direct_children = sorted(adj.get(genre, set()), key=str.lower)
-        if direct_children:
-            nodes = [genre] + direct_children
-            edges = [(genre, c) for c in direct_children]
-            level = {genre: 0, **{c: 1 for c in direct_children}}
+        direct_parents  = sorted(adj_up.get(genre, set()), key=str.lower)
+        if direct_children or direct_parents:
+            nodes = [*direct_parents, genre, *direct_children]
+            edges = [(p, genre) for p in direct_parents] + [(genre, c) for c in direct_children]
+            level = {**{p: -1 for p in direct_parents}, genre: 0, **{c: 1 for c in direct_children}}
 
     if not nodes or not edges:
         st.info("Sem ligações para esta profundidade.")
@@ -469,11 +627,11 @@ def render_genealogy_page():
         fig = _branch_sankey(
             nodes, edges, level,
             root=genre, focus=focus,
-            branch_only=branch_only,
+            branch_only=(branch_only or force_branch_only),
             is_mobile=is_mobile,
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.caption("Azul = caminho destacado do género seleccionado até ao ramo escolhido.")
+        st.caption("Blue = highlighted path from the selected genre to the chosen branch.")
 
     st.divider()
 
@@ -494,8 +652,12 @@ def render_genealogy_page():
 
     colL2, colR2 = st.columns(2)
     with colL2:
-        st.button("🗺️ Open in Influence map (Dynamic)",
-                  use_container_width=True, on_click=_go_influence, args=(genre,))
+        st.button(
+            "🗺️ Open in Influence map (Dynamic)",
+            use_container_width=True, on_click=_go_influence, args=(genre,),
+        )
     with colR2:
-        st.button("🧭 Search on *Genres* page",
-                  use_container_width=True, on_click=_go_genres, args=(genre,))
+        st.button(
+            "🧭 Search on *Genres* page",
+            use_container_width=True, on_click=_go_genres, args=(genre,),
+        )
