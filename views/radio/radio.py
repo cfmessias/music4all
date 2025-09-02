@@ -1,7 +1,6 @@
 # views/radio/radio.py
-# Internet Radio (Radio Browser) — per-device defaults (localStorage),
-# per-device favorites (localStorage), compact UI for mobile, star toggle,
-# and single active player at any time.
+# Internet Radio (Radio Browser) — per-device defaults & favorites via localStorage
+# Compact UI (mobile-friendly), 🤔/🙂 favorites toggle, single active player, no CSV import/export.
 
 from __future__ import annotations
 
@@ -10,12 +9,11 @@ import random
 import re
 from typing import List, Dict, Optional
 
-import pandas as pd
 import requests
 import streamlit as st
 from streamlit_local_storage import LocalStorage
 
-# ---------------- Defaults (used when nothing saved on device) ----------------
+# ---------------- Defaults ----------------
 DEFAULTS = {
     "name": "",               # Name contains
     "tag": "",                # Tag
@@ -42,12 +40,19 @@ WIDGET_KEYS = {
 # ---------------- Local (browser) storage ----------------
 ls = LocalStorage()
 
+# Guard: só 1 setItem por render (a tua versão da lib não aceita key= e pode dar DuplicateElementKey)
+st.session_state.setdefault("_radio_storage_written", False)
+
+def _ls_get(item_key: str, default=None):
+    # lê do dicionário em memória (sem levantar KeyError)
+    return st.session_state.get("_radio_storage", {}).get(item_key, default)
+
 def _merge_defaults(data: Dict | None) -> Dict:
     base = DEFAULTS.copy()
     if isinstance(data, dict):
         for k, v in data.items():
             if k in base:
-                base[k] = v
+                base[k] = v   # <- corrigido (tinha um ']' a mais)
     return base
 
 def load_device_defaults() -> Dict:
@@ -57,9 +62,15 @@ def load_device_defaults() -> Dict:
     except Exception:
         return DEFAULTS.copy()
 
+def _ls_set(item_key: str, value: str):
+    # escreve no dicionário e marca como "escrito"
+    store = st.session_state.setdefault("_radio_storage", {})
+    store[item_key] = value
+    st.session_state["_radio_storage_written"] = True
+
 def save_device_defaults(prefs: Dict) -> None:
     payload = json.dumps(_merge_defaults(prefs), ensure_ascii=False)
-    ls.setItem("radio.defaults", payload)
+    _ls_set("radio.defaults", payload)
 
 def load_device_favorites() -> List[Dict]:
     raw = ls.getItem("radio.favorites")
@@ -70,9 +81,19 @@ def load_device_favorites() -> List[Dict]:
         return []
 
 def save_device_favorites(rows: List[Dict]) -> None:
-    ls.setItem("radio.favorites", json.dumps(rows, ensure_ascii=False))
+    _ls_set("radio.favorites", json.dumps(rows, ensure_ascii=False))
 
-# Helpers for favorites
+def _ls_load_bool(item_key: str, default: bool = False) -> bool:
+    raw = ls.getItem(item_key)
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("true", "1", "yes", "on"):  return True
+        if s in ("false", "0", "no", "off"): return False
+    return default
+
+def _ls_save_bool(item_key: str, value: bool):
+    _ls_set(item_key, "true" if value else "false")
+# Helpers para favoritos
 def _fav_key(s: Dict) -> str:
     su = (s.get("stationuuid") or "").strip()
     if su:
@@ -80,7 +101,6 @@ def _fav_key(s: Dict) -> str:
     return (s.get("url_resolved") or s.get("url") or "").strip()
 
 def _station_minimal(s: Dict) -> Dict:
-    """Keep only fields we need to render favorites & play."""
     return {
         "key": _fav_key(s),
         "name": s.get("name") or "",
@@ -226,53 +246,59 @@ def _rb_top_stations(
         out.append({**s, "url_resolved": url})
     return out
 
+# ---------------- Defaults scheduling ----------------
+def _schedule_apply_defaults(prefs: dict | None = None):
+    if prefs is None:
+        prefs = load_device_defaults()
+    payload = {k: prefs.get(k, DEFAULTS[k]) for k in DEFAULTS}
+    st.session_state["_radio_apply_defaults"] = True
+    st.session_state["_radio_defaults_payload"] = payload
+
 # ---------------- Page ----------------
 def render_radio_page():
-    """Radio page: per-device defaults & favorites (localStorage), compact cards, single active player."""
-    # Isolated state
+    """Radio page: per-device defaults & favorites, compact cards, single active player."""
+    # --- garantir estado interno do "localStorage" em memória ---
+    st.session_state.setdefault("_radio_storage", {})
+    st.session_state.setdefault("_radio_storage_written", False)
+
+    # Aplicar defaults agendados (ou 1ª carga) ANTES de criar widgets
+    if st.session_state.get("_radio_apply_defaults", False) or "radio_defaults_loaded" not in st.session_state:
+        prefs = st.session_state.pop("_radio_defaults_payload", None)
+        if prefs is None:
+            prefs = load_device_defaults()  # auto na 1ª execução
+        for k in DEFAULTS:
+            st.session_state[WIDGET_KEYS[k]] = prefs.get(k, DEFAULTS[k])
+        st.session_state["radio_defaults_loaded"] = True
+        st.session_state["_radio_apply_defaults"] = False
+
+    # Estado geral da página
     st.session_state.setdefault("radio_results", [])
     st.session_state.setdefault("radio_play_url", "")
     st.session_state.setdefault("radio_play_idx", None)
-    st.session_state.setdefault("radio_play_source", None)  # "results" or "favorites"
-    st.session_state.setdefault("radio_audio_rev", 0)       # forces audio widget refresh
+    st.session_state.setdefault("radio_play_source", None)  # "results" | "favorites"
+    st.session_state.setdefault("radio_audio_rev", 0)
     st.session_state.setdefault("radio_rb_base", "")
+    # Show favorites: ON por defeito e persistente
+    st.session_state.setdefault("radio_show_favs", _ls_load_bool("radio.showFavs", True))
 
     st.subheader("📻 Radio")
     st.caption("Directory: Radio Browser (public)")
 
-    # --------- Favorites header (export/import) ---------
+    # --------- Favoritos (sem CSV) ---------
     favs = load_device_favorites()
     st.markdown("#### ⭐ My favorites (on this device)")
-    cF1, cF2, cF3 = st.columns([1.4, 1.0, 2.6])
-    with cF1:
-        csv_bytes = pd.DataFrame(favs).to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Export favorites (CSV)",
-            data=csv_bytes,
-            file_name="radio_favorites.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with cF2:
-        upload = st.file_uploader("Import CSV", type=["csv"], accept_multiple_files=False, label_visibility="visible")
-        if upload is not None:
-            try:
-                imp = pd.read_csv(upload, dtype=str).fillna("")
-                # Normalize expected columns (keep only known fields)
-                keep = {"key","name","url","homepage","countrycode","codec","bitrate","tags","favicon","stationuuid"}
-                cols = [c for c in imp.columns if c in keep]
-                imp = imp[cols]
-                # Merge & dedup by 'key'
-                merged = pd.DataFrame(favs)
-                all_rows = pd.concat([merged, imp], ignore_index=True)
-                all_rows = all_rows.drop_duplicates(subset=["key"], keep="first")
-                save_device_favorites(all_rows.to_dict(orient="records"))
-                st.success(f"Imported {len(imp)} favorite(s).")
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Failed to import CSV: {e}")
-    with cF3:
-        show_favs = st.toggle("Show my favorites list", value=False)
+    show_favs = st.toggle(
+        "Show my favorites list",
+        value=st.session_state.get("radio_show_favs", True),
+        key="radio_show_favs",
+    )
+    # Se mudou, grava no dispositivo e termina o render
+    prev = st.session_state.get("_radio_prev_showfavs", None)
+    changed = (prev is None) or (prev != bool(show_favs))
+    if changed:
+        _ls_save_bool("radio.showFavs", bool(show_favs))  # 1º setItem deste render
+        st.session_state["_radio_prev_showfavs"] = bool(show_favs)
+        st.rerun()
 
     if show_favs:
         if not favs:
@@ -282,7 +308,7 @@ def render_radio_page():
             for j, row in enumerate(favs, start=1):
                 with st.container(border=True):
                     cols = st.columns([0.12, 0.63, 0.25])
-                    # logo — smaller for mobile
+                    # logo — 40px (mobile)
                     with cols[0]:
                         favico = (row.get("favicon") or "").strip()
                         if favico:
@@ -294,10 +320,7 @@ def render_radio_page():
                         name = row.get("name") or "—"
                         country = row.get("countrycode") or "—"
                         codec = (row.get("codec") or "—").upper()
-                        try:
-                            br = int(row.get("bitrate") or 0)
-                        except Exception:
-                            br = 0
+                        br = int(row.get("bitrate") or 0)
                         tags = row.get("tags") or ""
                         st.markdown(f"**{name}**  \n{country} • {codec} • {br} kbps")
                         if tags:
@@ -306,57 +329,44 @@ def render_radio_page():
                     with cols[2]:
                         a1, a2 = st.columns([0.35, 0.65])
                         with a1:
-                            # Favorite star (always filled in favorites list)
-                            st.button("★", key=f"radio_fav_star_{j}", help="In favorites", use_container_width=True, disabled=True)
+                            st.button("🙂", key=f"radio_fav_icon_{j}", help="In favorites",
+                                      use_container_width=True, disabled=True)
                         with a2:
                             if st.button("Play", key=f"radio_fav_play_{j}", use_container_width=True):
-                                # ensure single active player
                                 st.session_state["radio_play_url"] = row.get("url","")
                                 st.session_state["radio_play_idx"] = f"fav_{j}"
                                 st.session_state["radio_play_source"] = "favorites"
                                 st.session_state["radio_audio_rev"] += 1
-
-                    # inline player (only one global)
+                    # inline player
                     if (
                         st.session_state.get("radio_play_source") == "favorites" and
                         st.session_state.get("radio_play_idx") == f"fav_{j}" and
                         st.session_state.get("radio_play_url")
                     ):
-                        st.audio(st.session_state["radio_play_url"], key=f"audio_{st.session_state['radio_audio_rev']}")
+                        st.audio(st.session_state["radio_play_url"])
                         st.caption(st.session_state["radio_play_url"])
 
     st.markdown("---")
 
     # --------- Search bar + advanced options ---------
-    # Load defaults into widgets if not set yet
-    if "radio_defaults_loaded" not in st.session_state:
-        prefs = load_device_defaults()
-        for k, v in prefs.items():
-            st.session_state.setdefault(WIDGET_KEYS[k], v)
-        st.session_state["radio_defaults_loaded"] = True
-
     cA, cB = st.columns([3, 2])
     with cA:
         name_val = st.text_input("Name contains", key="radio_name")
         tag_val = st.text_input("Tag (e.g., jazz, rock, news)", key="radio_tag")
 
     with cB:
-        row1, row2 = st.columns([1.3, 1.7])
-        with row1:
+        opt_col, load_col, save_col = st.columns([1.2, 0.9, 0.9])
+        with opt_col:
             show_opts = st.toggle("Show options", value=False, key="radio_show_opts")
-        with row2:
-            b1, b2 = st.columns(2)
-            with b1:
-                if st.button("Load defaults", use_container_width=True, key="radio_btn_loaddefs"):
-                    prefs = load_device_defaults()
-                    for k, v in prefs.items():
-                        st.session_state[WIDGET_KEYS[k]] = v
-                    st.experimental_rerun()
-            with b2:
-                if st.button("Save defaults", use_container_width=True, key="radio_btn_savedefs"):
-                    bundle = {k: st.session_state.get(WIDGET_KEYS[k], DEFAULTS[k]) for k in DEFAULTS}
-                    save_device_defaults(bundle)
-                    st.success("Saved on this device")
+        with load_col:
+            if st.button("Load defaults", use_container_width=True, key="radio_btn_loaddefs"):
+                _schedule_apply_defaults()  # aplica no próximo render antes dos widgets
+                st.rerun()
+        with save_col:
+            if st.button("Save defaults", use_container_width=True, key="radio_btn_savedefs"):
+                bundle = {k: st.session_state.get(WIDGET_KEYS[k], DEFAULTS[k]) for k in DEFAULTS}
+                save_device_defaults(bundle)  # 1º setItem deste render
+                st.rerun()
 
         if show_opts:
             cc = st.text_input("Country code (ISO 2 letters)", key="radio_cc")
@@ -371,10 +381,8 @@ def render_radio_page():
                 do_search = st.button("Search", use_container_width=True, key="radio_btn_search")
             with c2:
                 if st.button("Reset to defaults", use_container_width=True, key="radio_btn_reset"):
-                    prefs = DEFAULTS.copy()
-                    for k, v in prefs.items():
-                        st.session_state[WIDGET_KEYS[k]] = v
-                    st.experimental_rerun()
+                    _schedule_apply_defaults(DEFAULTS)  # força defaults de fábrica
+                    st.rerun()
         else:
             cc = st.session_state.get("radio_cc", DEFAULTS["countrycode"])
             codec = st.session_state.get("radio_codec", DEFAULTS["codec"])
@@ -412,11 +420,21 @@ def render_radio_page():
             )
 
         st.session_state["radio_results"] = stations
-        # stop any playing audio (single active player rule)
+        # parar qualquer player anterior
         st.session_state["radio_play_url"] = ""
         st.session_state["radio_play_idx"] = None
         st.session_state["radio_play_source"] = None
         st.session_state["radio_audio_rev"] += 1
+
+    # --------- Autosave dos filtros (no dispositivo) ---------
+    current_prefs = {k: st.session_state.get(WIDGET_KEYS[k], DEFAULTS[k]) for k in DEFAULTS}
+    cur_sig = json.dumps(current_prefs, sort_keys=True)
+    if (cur_sig != st.session_state.get("_radio_last_saved", "")) and (not st.session_state["_radio_storage_written"]):
+        save_device_defaults(current_prefs)  # 1º (e único) setItem deste render
+        st.session_state["_radio_last_saved"] = cur_sig
+
+    # Reset do guard para o próximo render
+    st.session_state["_radio_storage_written"] = False
 
     # --------- Results ---------
     results = st.session_state.get("radio_results", [])
@@ -424,7 +442,6 @@ def render_radio_page():
         st.info("Use the filters above and click **Search** to find stations.")
         return
 
-    # favorites membership set for quick lookup
     fav_keys = {r.get("key") for r in load_device_favorites()}
 
     st.write(f"Found **{len(results)}** station(s).")
@@ -433,7 +450,7 @@ def render_radio_page():
         with st.container(border=True):
             cols = st.columns([0.12, 0.63, 0.25])
 
-            # Logo — smaller for mobile
+            # Logo — 40px (mobile-friendly)
             with cols[0]:
                 favico = (s.get("favicon") or "").strip()
                 if favico:
@@ -456,29 +473,26 @@ def render_radio_page():
                 if tags_txt:
                     st.caption(tags_txt)
 
-            # Actions (right): ☆/★ star + Play + Homepage
+            # Actions (right): 🤔/🙂 favorite toggle + Play + Homepage
             with cols[2]:
                 url = s.get("url_resolved") or s.get("url") or ""
                 key = _fav_key(s)
                 is_fav = key in fav_keys
 
-                # lay out small star + two buttons
                 a1, a2, a3 = st.columns([0.25, 0.4, 0.35])
 
                 with a1:
-                    star = "★" if is_fav else "☆"
-                    if st.button(star, key=f"radio_star_{i}", help="Toggle favorite", use_container_width=True):
+                    face = "🙂" if is_fav else "🤔"
+                    tip  = "Remove from favorites" if is_fav else "Add to favorites"
+                    if st.button(face, key=f"radio_face_{i}", help=tip, use_container_width=True):
                         if is_fav:
-                            remove_favorite_local(key)
-                            fav_keys.discard(key)
+                            remove_favorite_local(key)  # 1º setItem
                         else:
-                            add_favorite_local(s)
-                            fav_keys.add(key)
-                        st.experimental_rerun()
+                            add_favorite_local(s)       # 1º setItem
+                        st.rerun()  # termina render aqui -> evita 2º setItem
 
                 with a2:
                     if st.button("Play", key=f"radio_play_{i}", use_container_width=True):
-                        # enforce single active player
                         st.session_state["radio_play_url"] = url
                         st.session_state["radio_play_idx"] = i
                         st.session_state["radio_play_source"] = "results"
@@ -489,11 +503,11 @@ def render_radio_page():
                     if home:
                         st.link_button("Homepage", home, use_container_width=True)
 
-            # Inline player (only one global, keyed by radio_audio_rev)
+            # Inline player (apenas um, global)
             if (
                 st.session_state.get("radio_play_source") == "results" and
                 st.session_state.get("radio_play_idx") == i and
                 st.session_state.get("radio_play_url")
             ):
-                st.audio(st.session_state["radio_play_url"], key=f"audio_{st.session_state['radio_audio_rev']}")
+                st.audio(st.session_state["radio_play_url"])
                 st.caption(st.session_state["radio_play_url"])
