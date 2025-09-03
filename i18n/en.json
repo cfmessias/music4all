@@ -1,0 +1,17 @@
+{
+  "Music": "Music",
+  "Cinema": "Cinema",
+  "Spotify": "Spotify",
+  "Playlists": "Playlists",
+  "Radio": "Radio",
+  "Genres": "Genres",
+  "Wikipedia": "Wikipedia",
+  "Movies": "Movies",
+  "Series": "Series",
+  "Soundtracks": "Soundtracks",
+  "Artists": "Artists",
+  "Prev": "Prev",
+  "Next": "Next",
+  "Page {page}/{total}": "Page {page}/{total}",
+  "🧭 Genres subheader": "🧭 Genres"
+}
