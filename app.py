@@ -17,6 +17,7 @@ from views.genres_roots_page import render_genres_page_roots as render_genres_pa
 from views.playlists_page import render_playlists_page
 # from views.genealogy_page_up_down import render_genealogy_page
 # from views.influence_map import render_influence_map_page
+from cinema.artists.page import render_artists_page  # NEW
 
 # >>> NEW: Radio page (root-level radio.py). If you place it under views/radio/page.py,
 # change this import to:  from views.radio.page import render_radio_page
@@ -47,7 +48,25 @@ def _resolve_cinema_runner():
 render_cinema = _resolve_cinema_runner()
 
 # ---------- Page setup ----------
-st.set_page_config(page_title="Music & Cinema", page_icon="🎛️", layout="wide")
+# ---------- Page config & header ----------
+
+st.set_page_config(
+    page_title="Music4all",
+    page_icon="🎵",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+st.title("🎵 Music4all")
+
+# Toggles por baixo do título (disponíveis para o resto da app)
+c_mob, c_ap = st.columns([1, 1])
+with c_mob:
+    st.toggle("📱 Mobile layout", key="ui_mobile")
+with c_ap:
+    st.toggle("🔊 Audio previews", key="ui_audio_preview")
+
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
 st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
 # =========================================================
@@ -102,7 +121,8 @@ if domain.endswith("Music"):
     #     render_influence_map_page()
 
 else:
-    cinema_labels = ["🍿 Movies", "📺 Series", "🎼 Soundtracks"]
+    
+    cinema_labels = ["🍿 Movies", "📺 Series", "🎼 Soundtracks", "👤 Artists"]  # NEW
     cinema_choice = st.radio(
         label="cinema_submenu",
         options=cinema_labels,
@@ -113,4 +133,8 @@ else:
     section = cinema_choice.split(" ", 1)[1] if " " in cinema_choice else cinema_choice
 
     st.markdown("---")
-    render_cinema(section=section)
+    if section == "Artists":           # NEW
+        render_artists_page()
+    else:
+        render_cinema(section=section)
+

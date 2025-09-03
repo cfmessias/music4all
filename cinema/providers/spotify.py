@@ -1,168 +1,357 @@
-# cinema/providers/spotify.py
-import os
-import requests
+import os, re, unicodedata
+from typing import List, Dict, Any, Optional
+import urllib.parse as _up
+
 import streamlit as st
-from ..filters import parse_year_filter
+from rapidfuzz import fuzz
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
-# 1) Tenta usar os TEUS serviços (services/spotify)
-_spfy_client = None
-_spfy_search_fn = None
-_spfy_token_fn = None
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", st.secrets.get("SPOTIFY_CLIENT_ID", ""))
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", st.secrets.get("SPOTIFY_CLIENT_SECRET", ""))
+SPOTIFY_MARKET = os.getenv("SPOTIFY_MARKET", st.secrets.get("SPOTIFY_MARKET", "US")) or "US"
 
-try:
-    # Tenta padrões comuns do teu projeto
-    # a) função direta de procura
-    from services.spotify.search import search_albums as _svc_search_albums  # ex.: retorna lista de álbuns
-    _spfy_search_fn = _svc_search_albums
-except Exception:
-    pass
+# ---------------- Parse/embeds ----------------
+def _parse_spotify_kind_id(url_or_uri: str) -> tuple[str | None, str | None]:
+    """
+    Devolve (kind, id) para 'spotify:album:ID' / 'https://open.spotify.com/album/ID' / ...
+    kind ∈ {'album','playlist','track'}
+    """
+    s = (url_or_uri or "").strip()
+    if not s:
+        return (None, None)
+    if s.startswith("spotify:"):
+        parts = s.split(":")
+        if len(parts) >= 3:
+            return (parts[1], parts[2])
+        return (None, None)
+    if "open.spotify.com" in s:
+        path = _up.urlparse(s).path.strip("/")
+        segs = [x for x in path.split("/") if x]
+        # pode vir 'embed/album/...'
+        if segs and segs[0] == "embed" and len(segs) >= 2:
+            segs = segs[1:]
+        if len(segs) >= 2:
+            return (segs[0], segs[1])
+    return (None, None)
 
-if _spfy_search_fn is None:
-    try:
-        # b) serviço com método .search_albums(...)
-        from services.spotify.core import SpotifyService  # ajusta se o teu serviço tiver outro nome
-        _spfy_client = SpotifyService()
-        _spfy_search_fn = _spfy_client.search_albums
-    except Exception:
-        pass
-
-if _spfy_token_fn is None:
-    try:
-        # caso o teu core exponha get_spotify_token(client_id, client_secret)
-        from services.spotify.core import get_spotify_token as _svc_get_token
-        _spfy_token_fn = _svc_get_token
-    except Exception:
-        pass
-
-# 2) Fallback para API se os serviços não estiverem carregáveis
-def _fallback_token() -> str:
-    cid = ""
-    csec = ""
-    try:
-        cid = st.secrets.get("SPOTIFY_CLIENT_ID", "") or st.secrets.get("client_id", "")
-        csec = st.secrets.get("SPOTIFY_CLIENT_SECRET", "") or st.secrets.get("client_secret", "")
-    except Exception:
-        pass
-    cid = cid or os.getenv("SPOTIFY_CLIENT_ID", "")
-    csec = csec or os.getenv("SPOTIFY_CLIENT_SECRET", "")
-
-    if _spfy_token_fn:
-        try:
-            tok = _spfy_token_fn(cid, csec)
-            if isinstance(tok, dict):
-                tok = tok.get("access_token") or tok.get("token")
-            return tok or ""
-        except Exception as e:
-            st.warning(f"Spotify service token error: {e}")
-
-    if not cid or not csec:
+@st.cache_data(ttl=86400, show_spinner=False)
+def compact_embed_url(url_or_uri: str) -> str:
+    """
+    Se for álbum/playlist: devolve embed do primeiro 'track' (mais baixo).
+    Caso contrário: devolve embed correspondente ao input.
+    """
+    kind, sid = _parse_spotify_kind_id(url_or_uri)
+    if not kind or not sid:
         return ""
-    r = requests.post(
-        "https://accounts.spotify.com/api/token",
-        data={"grant_type": "client_credentials"},
-        auth=(cid, csec),
-        timeout=15,
-    )
-    if r.ok:
-        return (r.json() or {}).get("access_token", "")
+    sp = _sp_client()
+
+    def _embed_track(tid: str) -> str:
+        return f"https://open.spotify.com/embed/track/{tid}"
+
     try:
-        st.warning(f"Spotify token HTTP {r.status_code}: {r.json()}")
+        if kind == "album":
+            tr = sp.album_tracks(sid, limit=1)
+            items = (tr or {}).get("items") or []
+            if items:
+                return _embed_track(items[0].get("id"))
+        elif kind == "playlist":
+            pl = sp.playlist_items(sid, limit=1, additional_types=["track"])
+            items = (pl or {}).get("items") or []
+            if items:
+                track = (items[0].get("track") or {})
+                tid = track.get("id")
+                if tid:
+                    return _embed_track(tid)
+        elif kind == "track":
+            return _embed_track(sid)
     except Exception:
-        st.warning(f"Spotify token HTTP {r.status_code}: {r.text}")
-    return ""
+        pass
 
-def _fallback_search_albums(query: str, limit: int = 10, market: str = "PT") -> list[dict]:
-    token = _fallback_token()
-    if not token:
-        return []
-    r = requests.get(
-        "https://api.spotify.com/v1/search",
-        params={"q": query, "type": "album", "limit": limit, "market": market},
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=20,
-    )
-    if not r.ok:
-        try:
-            st.warning(f"Spotify search HTTP {r.status_code}: {r.json()}")
-        except Exception:
-            st.warning(f"Spotify search HTTP {r.status_code}: {r.text}")
-        return []
-    data = r.json() or {}
-    return (data.get("albums") or {}).get("items") or []
+    # fallback: usar o embed do próprio recurso
+    if kind in {"album", "playlist", "track"}:
+        return f"https://open.spotify.com/embed/{kind}/{sid}"
+    return url_or_uri  # último recurso
 
-def _looks_like_ost(name: str) -> bool:
-    s = (name or "").lower()
-    return any(k in s for k in ["soundtrack", "original score", "motion picture", "ost", "score"])
+# ---------------- Spotify client (cacheado) ----------------
+@st.cache_resource(show_spinner=False)
+def _sp_client():
+    auth = SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET)
+    return spotipy.Spotify(client_credentials_manager=auth, requests_timeout=10, retries=2)
 
-def _album_fields(item: dict) -> dict:
-    """Normaliza campos essenciais de um álbum Spotify (nome, url, uri, ano, artista)."""
-    name = item.get("name", "")
-    url = (item.get("external_urls", {}) or {}).get("spotify", "") or item.get("url", "")
-    uri = item.get("uri", "") or item.get("spotify_uri", "")
-    rel = (item.get("release_date") or "")[:4]
-    year = int(rel) if rel.isdigit() else None
-    artist_name = ", ".join([a.get("name","") for a in item.get("artists", []) if a.get("name")]) or item.get("artist","")
-    return {"title": name, "url": url, "uri": uri, "year": year, "artist": artist_name}
+# ---------------- Normalização / util ----------------
+def _norm(s: str) -> str:
+    s = (s or "").lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"[\W_]+", " ", s).strip()
 
-def search_soundtrack_albums(title: str, year_txt: str | None = None, artist: str | None = None, limit: int = 10) -> list[dict]:
-    """
-    Usa os TEUS serviços se existirem; senão faz fallback à Web API.
-    Query força intenção de OST, e filtra por ano (exato ou intervalo).
-    """
-    base_ost = '(soundtrack OR "original score" OR "motion picture" OR ost OR score)'
-    t = (title or "").strip()
-    a = (artist or "").strip()
-    # queries do mais forte ao mais lato
-    queries = []
-    if t and a:
-        queries = [f'album:"{t}" artist:"{a}" {base_ost}', f'album:"{t}" {base_ost}', f'artist:"{a}" {base_ost}', base_ost]
-    elif t:
-        queries = [f'album:"{t}" {base_ost}', f'{t} {base_ost}', base_ost]
-    elif a:
-        queries = [f'artist:"{a}" {base_ost}', base_ost]
+def _safe_year(y) -> Optional[int]:
+    if not y: return None
+    m = re.search(r"\d{4}", str(y))
+    return int(m.group(0)) if m else None
+
+def _year_from_date(d: str) -> Optional[int]:
+    try:
+        return int((d or "")[:4])
+    except Exception:
+        return None
+
+def _album_year(alb: dict) -> Optional[int]:
+    return _year_from_date(alb.get("release_date") or "")
+
+def _album_artists(alb: dict) -> str:
+    return " ".join(a.get("name","") for a in alb.get("artists", []) if a.get("name"))
+
+# tokens distintivos: tudo depois de ":" / "–" / "()", senão palavras após a 1.ª
+def _distinct_tokens(title: str) -> set[str]:
+    base = title or ""
+    parts = re.split(r"[:\-\(\)]", base, maxsplit=1)
+    if len(parts) > 1 and parts[1].strip():
+        tail = parts[1]
+        toks = re.split(r"[\s/]+", tail)
     else:
-        queries = [base_ost, "soundtrack"]
+        bits = base.split()
+        toks = bits[1:] if len(bits) > 1 else []
+    stop = {"the","and","of","season","series","part"}
+    return {t.lower() for t in toks if len(t) >= 2 and t.lower() not in stop}
 
-    mode, val = parse_year_filter(year_txt or "")
-    def _year_ok(y):
-        if mode == "none":  return True
-        if mode == "exact": return y == val
-        a_, b_ = val;       return (y or 0) >= a_ and (y or 0) <= b_
+# gerar variantes simples do título: inserir ":" entre SIGLA + resto, e cabeça antes de ":"/"-"
+def _title_variants(title: str) -> List[str]:
+    title = (title or "").strip()
+    out = {title}
+    m = re.match(r"^([A-Z]{2,})(?:[\s\-:]+)(.+)$", title)
+    if m:
+        out.add(f"{m.group(1)}: {m.group(2)}")
+    head = re.split(r"[:\-–]", title, maxsplit=1)[0].strip()
+    if head and head.lower() != title.lower():
+        out.add(head)
+    return list(out)
 
-    results = []
-    for q in queries:
-        items = []
-        if _spfy_search_fn:
-            try:
-                # serviços teus — assumimos assinatura search_albums(query, limit=...)
-                items = _spfy_search_fn(q, limit=limit) or []
-            except TypeError:
-                # alguns serviços podem usar (query) sem limit
-                items = _spfy_search_fn(q) or []
-            except Exception as e:
-                st.warning(f"Spotify service search error: {e}")
-                items = []
-        else:
-            items = _fallback_search_albums(q, limit=limit, market=os.getenv("SPOTIFY_MARKET", "PT") or "PT")
+# ---------------- Palavras-chave ----------------
+_OST_STRICT_POS = [
+    "music from the motion picture",
+    "original motion picture soundtrack",
+    "motion picture soundtrack",
+    "original soundtrack",
+    "original score",
+    "score from the motion picture",
+    "television soundtrack",
+    "tv soundtrack",
+    "series soundtrack",
+]
+_OST_POS = [
+    "original motion picture soundtrack", "original soundtrack", "motion picture soundtrack",
+    "original score", "television soundtrack", "tv soundtrack", "series soundtrack", "soundtrack", "ost",
+]
+_OST_NEG = [
+    "deluxe","expanded","remaster","remastered","karaoke","tribute",
+    "mixtape","remix","covers","cover","demo","live at","bonus track"
+]
 
+def _has_kw(name: str, kws: List[str]) -> bool:
+    n = _norm(name)
+    return any(_norm(k) in n for k in kws)
+
+# ---------------- Scoring ----------------
+def _score_album_like(name: str, title: str, ref_year: Optional[int], media_kind: str,
+                      alb: dict | None = None, must_tokens: set[str] | None = None,
+                      hint_artists: Optional[List[str]] = None) -> float:
+    name_n = _norm(name)
+    title_n = _norm(title)
+    fuzzy = max(fuzz.WRatio(name_n, title_n), fuzz.token_set_ratio(name_n, title_n))
+
+    # Palavras de OST: muito fortes > fortes > ausência (penalização grande)
+    if _has_kw(name, _OST_STRICT_POS):
+        kw_bonus = 30
+    elif _has_kw(name, _OST_POS):
+        kw_bonus = 20
+    else:
+        kw_bonus = -50
+
+    neg_pen  = -10 if _has_kw(name, _OST_NEG) else 0
+
+    type_bonus = 0
+    tracks_b   = 0
+    year_pen   = 0
+    hint_bonus = 0
+    va_bonus   = 0
+
+    if alb:
+        if alb.get("album_type") == "album":
+            type_bonus = 8
+        tracks = alb.get("total_tracks") or 0
+        # OSTs costumam ter muitas faixas; poucas faixas → suspeito
+        tracks_b = 10 if tracks >= 12 else (4 if tracks >= 8 else -18)
+        rel = _album_year(alb)
+        # Para TV não penalizamos por ano (OST pode sair bem depois)
+        if ref_year and rel and not media_kind.lower().startswith("tv"):
+            year_pen = -4 * min(3, abs(rel - ref_year))
+        if hint_artists:
+            arts_n = _norm(_album_artists(alb))
+            if any(_norm(h) in arts_n for h in hint_artists):
+                hint_bonus = 14
+        # Compilações típicas de OST
+        arts_n2 = _norm(_album_artists(alb))
+        if any(k in arts_n2 for k in ["various artists", "orchestra", "ensemble", "score"]):
+            va_bonus = 6
+
+    kind_bonus = 0
+    if media_kind.lower().startswith("tv") and any(k in name_n for k in ["television","tv","season","series"]):
+        kind_bonus = 6
+
+    token_pen = 0
+    if must_tokens:
+        miss = [t for t in must_tokens if t not in name_n]
+        token_pen = -35 if len(miss) == len(must_tokens) else (-15 if miss else 0)
+
+    return float(
+        fuzzy + kw_bonus + neg_pen + type_bonus + tracks_b +
+        year_pen + hint_bonus + kind_bonus + token_pen + va_bonus
+    )
+
+# ---------------- Queries ----------------
+def _build_queries(title: str, ref_year: Optional[int], media_kind: str,
+                   hint_artists: Optional[List[str]]) -> List[str]:
+    title = (title or "").strip()
+    variants = _title_variants(title)
+
+    common = ['"original soundtrack"', '"original score"', 'soundtrack', 'score']
+    tv     = ['"original television"', '"tv series"', 'television', '"original series"']
+    movie  = ['"original motion picture"', '"motion picture"', 'film']
+
+    qs: List[str] = []
+    for t in variants:
+        base = f'album:"{t}"'
+        qs.append(base)
+        qs += [f"{base} {q}" for q in common]
+        qs += [f"{base} {q}" for q in (tv if media_kind.lower().startswith("tv") else movie)]
+
+    # queries com compositor (se houver)
+    head = re.split(r"[:\-–]", title, maxsplit=1)[0].strip()
+    for comp in (hint_artists or []):
+        c = comp.replace('"','')
+        qs.append(f'album:"{title}" artist:"{c}"')
+        if head and head.lower() != title.lower():
+            qs.append(f'album:"{head}" artist:"{c}"')
+
+    # Para filmes, estreitar por ano (±1). Para TV, não restringir por ano.
+    if ref_year and not media_kind.lower().startswith("tv"):
+        ywin = f" year:{ref_year-1}-{ref_year+1}"
+        qs = [q + ywin for q in qs]
+
+    # dedupe mantendo ordem
+    seen, out = set(), []
+    for q in qs:
+        if q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out
+
+# ---------------- Busca principal ----------------
+def _search_sp(sp, q: str, typestr: str, limit: int, market: Optional[str]) -> List[dict]:
+    """Faz pesquisa com/sem market. Devolve items da resposta (lista)."""
+    try:
+        res = sp.search(q=q, type=typestr, limit=min(20, limit), market=market) if market else sp.search(q=q, type=typestr, limit=min(20, limit))
+        items = res.get(f"{typestr}s", {}).get("items", [])
+        return items or []
+    except Exception:
+        return []
+
+def search_soundtrack_albums(title: str, year_txt: str = "", artist: str = "", limit: int = 25,
+                             media_kind: str = "movie",
+                             hint_artists: Optional[List[str]] = None) -> List[Dict[str,Any]]:
+    sp = _sp_client()
+    if not title:
+        return []
+
+    ref_year = _safe_year(year_txt)
+    must_tokens = _distinct_tokens(title)
+
+    # 1) ÁLBUNS (duas fases: com market, depois sem market se vazio)
+    candidates: List[dict] = []
+    seen_ids = set()
+    for q in _build_queries(title, ref_year, media_kind, hint_artists):
+        items = _search_sp(sp, q, "album", limit, SPOTIFY_MARKET)
         if not items:
-            continue
-
-        batch = []
-        for it in items:
-            if not _looks_like_ost(it.get("name","")):
+            items = _search_sp(sp, q, "album", limit, None)  # sem market → mais recall
+        for alb in items:
+            aid = alb.get("id")
+            if not aid or aid in seen_ids:
                 continue
-            fld = _album_fields(it)
-            if not _year_ok(fld["year"]):
-                continue
-            batch.append(fld)
-        results.extend(batch)
-        if results:
-            break
+            seen_ids.add(aid)
+            candidates.append(alb)
 
-    return results
+    scored = [
+        (_score_album_like(alb.get("name",""), title, ref_year, media_kind,
+                           alb=alb, must_tokens=must_tokens, hint_artists=hint_artists), alb)
+        for alb in candidates
+    ]
+    scored.sort(key=lambda t: t[0], reverse=True)
 
-def pick_best_soundtrack(title: str, year_txt: str | None = None, artist: str | None = None) -> dict | None:
-    """Devolve o melhor matching: primeiro resultado da pesquisa normalizada."""
-    albs = search_soundtrack_albums(title=title, year_txt=year_txt, artist=artist, limit=10)
-    return albs[0] if albs else None
+    out: List[Dict[str, Any]] = [{
+        "title": alb.get("name"),
+        "artist": _album_artists(alb),
+        "year": _album_year(alb) or "",
+        "url": (alb.get("external_urls") or {}).get("spotify") or "",
+        "uri": alb.get("uri") or "",
+        "_score": float(sc),
+    } for sc, alb in scored[:limit]]
+
+    # 2) FALLBACK: PLAYLISTS (muitas OST de TV existem só como playlists oficiais)
+    if not out:
+        plcands: List[dict] = []
+        pseen = set()
+        for q in _build_queries(title, ref_year, media_kind, hint_artists):
+            items = _search_sp(sp, q, "playlist", 20, SPOTIFY_MARKET)
+            if not items:
+                items = _search_sp(sp, q, "playlist", 20, None)
+            for pl in items:
+                pid = pl.get("id")
+                if not pid or pid in pseen:
+                    continue
+                pseen.add(pid)
+                plcands.append(pl)
+
+        pscored = [
+            (_score_album_like(pl.get("name",""), title, ref_year, media_kind,
+                               alb=None, must_tokens=must_tokens, hint_artists=hint_artists), pl)
+            for pl in plcands
+        ]
+        pscored.sort(key=lambda t: t[0], reverse=True)
+
+        out = out + [{
+            "title": pl.get("name"),
+            "artist": (pl.get("owner",{}) or {}).get("display_name",""),
+            "year": "",
+            "url": (pl.get("external_urls") or {}).get("spotify") or "",
+            "uri": pl.get("uri") or "",
+            "_score": float(sc),
+        } for sc, pl in pscored[:limit]]
+
+    return out
+
+def pick_best_soundtrack(title: str, year_txt: str = "", artist: Optional[str] = None,
+                         media_kind: str = "movie", hint_artists: Optional[List[str]] = None) -> Dict[str,Any]:
+    cands = search_soundtrack_albums(title=title, year_txt=year_txt, artist=artist or "",
+                                     limit=25, media_kind=media_kind, hint_artists=hint_artists)
+    if not cands:
+        return {}
+
+    # Preferir candidatos com sinais fortes de OST
+    strict = [c for c in cands if _has_kw(c["title"], _OST_STRICT_POS)]
+    if strict:
+        strict.sort(key=lambda x: x["_score"], reverse=True)
+        best = strict[0]
+    else:
+        best = cands[0]
+
+    # limiar adaptativo; se não tiver sinais de OST, exigir score mais alto
+    base_thresh = 68 if media_kind.lower().startswith("tv") else 72
+    needs_strong = not _has_kw(best["title"], _OST_POS)
+    thresh = base_thresh + (10 if needs_strong else 0)
+
+    return best if best.get("_score", 0) >= thresh else {}
+# Back-compat: API antiga
+def spotify_soundtrack_search(*args, **kwargs):
+    return search_soundtrack_albums(*args, **kwargs)

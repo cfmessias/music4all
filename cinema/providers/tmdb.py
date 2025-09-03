@@ -8,7 +8,78 @@ from ..filters import parse_year_filter
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 
+TMDB_API_KEY = (
+    os.getenv("TMDB_API_KEY")
+    or (st.secrets.get("TMDB_API_KEY") if hasattr(st, "secrets") else "")
+)
+
+
 # ---------- Auth & GET ----------
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def tmdb_search_id(kind: str, title: str, year: int | None) -> int | None:
+    """Procura ID no TMDb por título (+ ano). kind: 'movie'|'tv'."""
+    if not TMDB_API_KEY or not title:
+        return None
+    url = f"https://api.themoviedb.org/3/search/{'movie' if kind=='movie' else 'tv'}"
+    params = {"api_key": TMDB_API_KEY, "query": title, "include_adult": "false"}
+    if year:
+        params["year" if kind == "movie" else "first_air_date_year"] = int(year)
+    try:
+        r = requests.get(url, params=params, timeout=8)
+        r.raise_for_status()
+        res = (r.json() or {}).get("results") or []
+        rid = res[0].get("id") if res else None
+        return int(rid) if rid else None
+    except Exception:
+        return None
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def tmdb_poster_url(kind: str, tmdb_id: int | None, title: str, year: int | None) -> str:
+    """Devolve URL do poster (w342) via TMDb. Tenta por ID; se não houver, pesquisa por título."""
+    if not TMDB_API_KEY:
+        return ""
+    def _details(_id: int) -> dict:
+        base = "https://api.themoviedb.org/3"
+        url = f"{base}/{ 'movie' if kind=='movie' else 'tv' }/{int(_id)}"
+        try:
+            r = requests.get(url, params={"api_key": TMDB_API_KEY, "language": "en-US"}, timeout=8)
+            r.raise_for_status()
+            return r.json() or {}
+        except Exception:
+            return {}
+    tid = int(tmdb_id) if tmdb_id and str(tmdb_id).isdigit() else None
+    if not tid:
+        tid = tmdb_search_id(kind, (title or "").strip(), year)
+    if not tid:
+        return ""
+    data = _details(tid)
+    p = data.get("poster_path")
+    return f"https://image.tmdb.org/t/p/w342{p}" if p else ""
+
+def tmdb_get_composers(kind: str, tmdb_id: int) -> list[str]:
+    """
+    kind: 'movie' | 'tv'
+    devolve até 3 compositores principais (por ex. 'Original Music Composer').
+    """
+    data = _tmdb_get(f"/{'tv' if kind=='tv' else 'movie'}/{int(tmdb_id)}/credits",
+                     {"language": "en-US"}) or {}
+    names = []
+    for it in data.get("crew", []):
+        job = (it.get("job") or "").lower()
+        dep = (it.get("known_for_department") or "").lower()
+        if "composer" in job or (dep == "music" and ("composer" in job or job == "music")):
+            nm = it.get("name") or it.get("original_name")
+            if nm:
+                names.append(str(nm).strip())
+    # dedupe mantendo ordem
+    seen, out = set(), []
+    for n in names:
+        low = n.lower()
+        if low not in seen:
+            seen.add(low); out.append(n)
+    return out[:3]
 
 def _tmdb_auth():
     bearer = ""
