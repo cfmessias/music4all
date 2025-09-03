@@ -1,14 +1,51 @@
 # cinema/data.py
 from __future__ import annotations
 
-import pandas as pd
 from pathlib import Path
+import pandas as pd
+# (mantém) lê config do projeto
 from .config import BASE_DIR, FILES, SCHEMA, SEP, GENRE_FILES
 
+
+# ---------- NOVO: resolver caminho real antes de criar vazio ----------
+def _candidate_dirs() -> list[Path]:
+    """Locais prováveis onde os CSVs podem estar (raiz, cwd, cinema/, cinema/data/)."""
+    base = Path(BASE_DIR).resolve()
+    return [
+        Path.cwd(),
+        base,
+        base / "cinema",
+        base / "cinema" / "data",
+    ]
+
+def _resolve_path_like(path: Path) -> Path:
+    """
+    Se 'path' não existir, tenta encontrar um ficheiro com o MESMO NOME
+    nas pastas candidatas (raiz/cwd/cinema/...). Se achar, usa esse.
+    Caso contrário, devolve o 'path' original (para eventual criação).
+    """
+    if path.exists():
+        return path
+    fname = path.name
+    for d in _candidate_dirs():
+        p = d / fname
+        if p.exists():
+            return p
+    return path
+# ----------------------------------------------------------------------
+
+
 def ensure_csv(path: Path, headers: list[str]) -> None:
+    """
+    Garante que o ficheiro existe com as colunas mínimas.
+    ATENÇÃO: antes de criar, tentamos resolver um existente noutro diretório.
+    """
+    # ---------- ALTERADO: resolver antes de criar ----------
+    path = _resolve_path_like(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         pd.DataFrame(columns=headers).to_csv(path, index=False, sep=SEP, encoding="utf-8")
+
 
 def _ensure_schema(df: pd.DataFrame, section: str) -> pd.DataFrame:
     cols = SCHEMA[section]
@@ -20,8 +57,13 @@ def _ensure_schema(df: pd.DataFrame, section: str) -> pd.DataFrame:
     df = df[cols]
     return df
 
+
 def load_table(section: str) -> pd.DataFrame:
+    # ---------- ALTERADO: resolver caminho de forma robusta ----------
     path = FILES[section]
+    path = Path(path) if not isinstance(path, Path) else path
+    path = _resolve_path_like(path)
+
     ensure_csv(path, SCHEMA[section])
     df = pd.read_csv(path, sep=SEP, encoding="utf-8")
 
@@ -49,25 +91,32 @@ def load_table(section: str) -> pd.DataFrame:
 
     df = _ensure_schema(df, section)
 
-    # tipos leves
+    # ---------- ALTERADO: remover FutureWarning do pandas ----------
+    # Em vez de errors="ignore", usamos "coerce" e tratamos NaN a jusante.
     if "watched" in df.columns:
         df["watched"] = df["watched"].astype(bool, copy=False)
     if "year" in df.columns:
-        df["year"] = pd.to_numeric(df["year"], errors="ignore")
+        df["year"] = pd.to_numeric(df["year"], errors="coerce")
     if "year_start" in df.columns:
-        df["year_start"] = pd.to_numeric(df["year_start"], errors="ignore")
+        df["year_start"] = pd.to_numeric(df["year_start"], errors="coerce")
     if "year_end" in df.columns:
-        df["year_end"] = pd.to_numeric(df["year_end"], errors="ignore")
+        df["year_end"] = pd.to_numeric(df["year_end"], errors="coerce")
     if "season" in df.columns:
-        df["season"] = pd.to_numeric(df["season"], errors="ignore")
+        df["season"] = pd.to_numeric(df["season"], errors="coerce")
 
     return df
 
+
 def save_table(section: str, df: pd.DataFrame) -> None:
+    # ---------- ALTERADO: resolver caminho de forma robusta ----------
     path = FILES[section]
+    path = Path(path) if not isinstance(path, Path) else path
+    path = _resolve_path_like(path)
+
     ensure_csv(path, SCHEMA[section])
     df = _ensure_schema(df, section)
     df.to_csv(path, index=False, sep=SEP, encoding="utf-8")
+
 
 def load_genres() -> tuple[list[str], dict[str, list[str]], Path]:
     """
@@ -82,7 +131,7 @@ def load_genres() -> tuple[list[str], dict[str, list[str]], Path]:
             break
     if file_path is None:
         # Fallback básico
-        return (["All"], {}, BASE_DIR / "generos_cinema_selectbox.csv")
+        return (["All"], {}, Path(BASE_DIR) / "generos_cinema_selectbox.csv")
 
     df = pd.read_csv(file_path, sep=SEP, encoding="utf-8")
     # normalizar nomes das colunas
