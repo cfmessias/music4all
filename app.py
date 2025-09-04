@@ -15,8 +15,6 @@ from views.spotify.page import render_spotify_page
 from views.wiki_page import render_wikipedia_page
 from views.genres_roots_page import render_genres_page_roots as render_genres_page
 from views.playlists_page import render_playlists_page
-# from views.genealogy_page_up_down import render_genealogy_page
-# from views.influence_map import render_influence_map_page
 from cinema.artists.page import render_artists_page  # NEW
 
 # >>> NEW: Radio page (root-level radio.py). If you place it under views/radio/page.py,
@@ -115,10 +113,7 @@ if domain.endswith("Music"):
         render_genres_page()
     elif selected == "Playlists":
         render_playlists_page()
-    # elif selected == "Genealogy":
-    #     render_genealogy_page()
-    # elif selected == "Influence map":
-    #     render_influence_map_page()
+ 
 
 else:
     

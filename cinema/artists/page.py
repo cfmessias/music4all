@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 # ------------------------------------------------------------------
-# TMDb – chave lida de env ou st.secrets (Streamlit Cloud)
+# TMDb – chave/region lidas de env ou st.secrets (Streamlit Cloud)
 # ------------------------------------------------------------------
 TMDB_API_KEY = (
     os.getenv("TMDB_API_KEY")
@@ -18,6 +18,34 @@ TMDB_API_KEY = (
 
 TMDB_API = "https://api.themoviedb.org/3"
 IMG_BASE = "https://image.tmdb.org/t/p/"
+
+TMDB_REGION_DEFAULT = (
+    os.getenv("TMDB_REGION", "")
+    or (st.secrets.get("TMDB_REGION") if hasattr(st, "secrets") else "")
+    or "PT"
+)
+
+# NEW: lista compacta de países/region codes suportados pela TMDb
+COUNTRY_CHOICES = [
+    ("Portugal", "PT"),
+    ("United States", "US"),
+    ("United Kingdom", "GB"),
+    ("Spain", "ES"),
+    ("France", "FR"),
+    ("Germany", "DE"),
+    ("Italy", "IT"),
+    ("Netherlands", "NL"),
+    ("Brazil", "BR"),
+    ("Mexico", "MX"),
+    ("Canada", "CA"),
+    ("Australia", "AU"),
+    ("Argentina", "AR"),
+    ("Chile", "CL"),
+    ("Colombia", "CO"),
+    ("India", "IN"),
+    ("Japan", "JP"),
+    ("South Korea", "KR"),
+]
 
 # ------------------------------------------------------------------
 # Helpers HTTP + util
@@ -51,7 +79,6 @@ def _clean_bio(txt: str | None, max_chars: int = 900) -> str:
     t = re.sub(r"\s+\n", "\n", t)
     if len(t) <= max_chars:
         return t
-    # corta numa borda “limpa”
     cut = t[:max_chars].rsplit(". ", 1)[0]
     return cut + "…"
 
@@ -71,12 +98,48 @@ def _person_details(pid: int) -> dict:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _person_bio(pid: int) -> dict:
-    # biography costuma vir no details; esta chamada extra tem também external_ids
     return _tmdb_get(f"/person/{pid}", {"append_to_response": "external_ids"})
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _person_combined_credits(pid: int) -> dict:
     return _tmdb_get(f"/person/{pid}/combined_credits")
+
+# CHANGED: providers de streaming (watch/providers), com cache e fallback de região
+@st.cache_data(ttl=86400, show_spinner=False)
+def _tmdb_watch_providers(media_type: str, tmdb_id: int, region: str) -> str:
+    """
+    media_type: 'movie' | 'tv'
+    devolve providers (flatrate/ads/free/buy/rent) em ordem de relevância, para a região dada.
+    """
+    if not tmdb_id or not TMDB_API_KEY:
+        return ""
+    url = f"{TMDB_API}/{ 'movie' if media_type=='movie' else 'tv' }/{int(tmdb_id)}/watch/providers"
+    try:
+        r = requests.get(url, params={"api_key": TMDB_API_KEY}, timeout=8)
+        r.raise_for_status()
+        data = r.json() or {}
+        results = data.get("results") or {}
+        region_data = results.get(region) or {}
+
+        names: list[str] = []
+        for key in ("flatrate", "ads", "free", "buy", "rent"):
+            for p in (region_data.get(key) or []):
+                n = p.get("provider_name")
+                if n and n not in names:
+                    names.append(n)
+
+        # fallback para US se a região escolhida não tiver dados
+        if not names and region != "US":
+            region_data = results.get("US") or {}
+            for key in ("flatrate", "ads", "free", "buy", "rent"):
+                for p in (region_data.get(key) or []):
+                    n = p.get("provider_name")
+                    if n and n not in names:
+                        names.append(n)
+
+        return ", ".join(names[:4])
+    except Exception:
+        return ""
 
 # ------------------------------------------------------------------
 # Filmography build
@@ -114,7 +177,7 @@ def _filmography_df(credits: dict) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     if df.empty:
-        return pd.DataFrame(columns=["type","title","year","role","job","rating"])
+        return pd.DataFrame(columns=["type","title","year","role","job","rating","tmdb_id"])
 
     # ordena por ano desc, depois rating
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce").fillna(0.0)
@@ -132,6 +195,7 @@ def render_artists_page() -> None:
         st.error("TMDB_API_KEY not configured. Add it to environment or Streamlit secrets.")
         return
 
+    # Pesquisa
     with st.container():
         c1, c2 = st.columns([2, 1])
         name = c1.text_input("Artist name", placeholder="e.g. Geena Davis", key="artists_query")
@@ -141,6 +205,7 @@ def render_artists_page() -> None:
         if do_search:
             st.session_state["artists_results"] = _search_people(name, page=int(page_sel))
             st.session_state.pop("artists_selected", None)
+            st.session_state.pop("artists_film_page", None)
 
     results = st.session_state.get("artists_results", [])
 
@@ -168,6 +233,7 @@ def render_artists_page() -> None:
                 with cC:
                     if st.button("Open", key=f"open_{pid}"):
                         st.session_state["artists_selected"] = pid
+                        st.session_state.pop("artists_film_page", None)
                         st.experimental_rerun()
 
     # Detalhe do artista
@@ -184,7 +250,7 @@ def render_artists_page() -> None:
         bio = _clean_bio(det.get("biography") or "")
         prof = _img_url(det.get("profile_path"), "w300")
 
-        # Cabeçalho com poster à direita
+        # Cabeçalho com poster à direita (tamanho controlado)
         st.markdown("---")
         header = f"**{name}**"
         if born:
@@ -204,18 +270,20 @@ def render_artists_page() -> None:
         with cR:
             if prof:
                 st.markdown(
-                f"""
-                <div style="display:flex;justify-content:flex-end">
-                    <img src="{prof}"
-                        alt="portrait"
-                        style="width:120px;max-width:120px;height:auto;
-                                border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.15);" />
-                </div>
-                """,
-                unsafe_allow_html=True,
-        )
+                    f"""
+                    <div style="display:flex;justify-content:flex-end">
+                        <img src="{prof}"
+                            alt="portrait"
+                            style="width:120px;max-width:120px;height:auto;
+                                   border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.15);" />
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        # Filmografia
+        # ======================
+        # Filmography (com Streaming + paginação + rating 1 casa)
+        # ======================
         st.subheader("Filmography")
         df = _filmography_df(cr)
 
@@ -224,11 +292,26 @@ def render_artists_page() -> None:
             return
 
         # Filtros simples
-        f1, f2, f3 = st.columns([1, 1, 1])
-        kind = f1.selectbox("Type", ["All", "Movie", "Series"])
-        dept_choice = f2.selectbox("Department", ["All", "Cast (role)", "Crew (job)"])
-        q = f3.text_input("Title contains", "")
+        f1, f2, f3, f4 = st.columns([1, 1, 1, 1])  # CHANGED: +1 col para país
+        kind = f1.selectbox("Type", ["All", "Movie", "Series"], key="art_type")
+        dept_choice = f2.selectbox("Department", ["All", "Cast (role)", "Crew (job)"], key="art_dept")
+        q = f3.text_input("Title contains", "", key="art_q")
 
+        # NEW: seletor de país/região para providers de streaming
+        # índice default baseado no TMDB_REGION_DEFAULT
+        default_idx = next((i for i, (_, code) in enumerate(COUNTRY_CHOICES)
+                            if code == TMDB_REGION_DEFAULT), 0)
+        country_name = f4.selectbox(
+            "Streaming country",
+            options=[n for (n, _) in COUNTRY_CHOICES],
+            index=default_idx,
+            key="art_region_name",
+            help="Escolhe a região usada para listar os serviços de streaming."
+        )
+        REGION_SELECTED = dict(COUNTRY_CHOICES)[country_name]
+        st.session_state["artists_region"] = REGION_SELECTED
+
+        # Aplica filtros
         fdf = df.copy()
         if kind != "All":
             fdf = fdf[fdf["type"] == kind]
@@ -239,11 +322,55 @@ def render_artists_page() -> None:
         if q.strip():
             fdf = fdf[fdf["title"].str.contains(q.strip(), case=False, na=False)]
 
-        # Apresentação
-        cols = ["type", "title", "year", "role", "job", "rating"]
-        fdf = fdf[cols]
+        # Paginação (10 por página)
+        PER_PAGE = 10
+        total = len(fdf)
+        total_pages = max(1, (total - 1) // PER_PAGE + 1)
+        page_key = "artists_film_page"
+
+        cur = int(st.session_state.get(page_key, 1))
+        cur = max(1, min(cur, total_pages))
+
+        c_prev, c_mid, c_next = st.columns([0.15, 0.7, 0.15])
+        with c_prev:
+            if st.button("⟨ Prev", disabled=(cur <= 1), key="art_prev"):
+                cur = max(1, cur - 1)
+        with c_next:
+            if st.button("Next ⟩", disabled=(cur >= total_pages), key="art_next"):
+                cur = min(total_pages, cur + 1)
+        st.session_state[page_key] = cur
+        c_mid.caption(f"Page {cur} / {total_pages} • {total} items")
+
+        start = (cur - 1) * PER_PAGE
+        end = min(cur * PER_PAGE, total)
+        page_rows = fdf.iloc[start:end].copy()
+
+        # Streaming (watch/providers) apenas para esta página — usa a região escolhida
+        if "tmdb_id" not in page_rows.columns:
+            page_rows["tmdb_id"] = ""
+
+        def _stream_for_row(r: pd.Series) -> str:
+            mt = "movie" if str(r.get("type")).lower().startswith("movie") else "tv"
+            tid = r.get("tmdb_id")
+            try:
+                tid = int(tid)
+            except Exception:
+                return ""
+            region = st.session_state.get("artists_region", TMDB_REGION_DEFAULT)  # CHANGED
+            return _tmdb_watch_providers(mt, tid, region=region)
+
+        page_rows["streaming"] = page_rows.apply(_stream_for_row, axis=1)
+
+        # Apresentação (rating 1 casa decimal)
+        cols_show = ["type", "title", "year", "streaming", "role", "job", "rating"]
+        for c in cols_show:
+            if c not in page_rows.columns:
+                page_rows[c] = ""
+
+        page_rows["rating"] = pd.to_numeric(page_rows["rating"], errors="coerce").fillna(0).round(1)
+
         st.dataframe(
-            fdf.style.format({"rating": "{:.1f}"}),
+            page_rows[cols_show].style.format({"rating": "{:.1f}"}),
             use_container_width=True,
             hide_index=True,
         )
@@ -252,4 +379,5 @@ def render_artists_page() -> None:
         st.markdown("")
         if st.button("← Back to results"):
             st.session_state.pop("artists_selected", None)
+            st.session_state.pop("artists_film_page", None)
             st.experimental_rerun()
