@@ -234,7 +234,7 @@ def render_artists_page() -> None:
                     if st.button("Open", key=f"open_{pid}"):
                         st.session_state["artists_selected"] = pid
                         st.session_state.pop("artists_film_page", None)
-                        st.experimental_rerun()
+                        st.rerun()
 
     # Detalhe do artista
     sel = st.session_state.get("artists_selected")
@@ -380,4 +380,4 @@ def render_artists_page() -> None:
         if st.button("← Back to results"):
             st.session_state.pop("artists_selected", None)
             st.session_state.pop("artists_film_page", None)
-            st.experimental_rerun()
+            st.rerun()

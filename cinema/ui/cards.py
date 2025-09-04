@@ -1,22 +1,94 @@
 # cinema/ui/cards.py
 from __future__ import annotations
+import os
+import requests
 import pandas as pd
 import streamlit as st
+
 from cinema.providers.tmdb import tmdb_poster_url
 from cinema.views.spotify_embed import render_player
+from cinema.data import load_table
 from .helpers import (
     key_for, title_match_score, artists_from_row_or_fetch, parse_date_like,
     on_click_play, safe_intlike, to_spotify_embed,
-    save_watched_item_movies, save_watched_item_series, _norm
+    save_watched_item_movies, save_watched_item_series
 )
 
-def render_remote_results(section: str, remote: list[dict], query_title: str) -> None:
+# === TMDb key (env ou secrets) ===
+TMDB_API_KEY = (
+    os.getenv("TMDB_API_KEY")
+    or (st.secrets.get("TMDB_API_KEY") if hasattr(st, "secrets") else None)
+    or ""
+)
+TMDB_API = "https://api.themoviedb.org/3"
+
+
+# --- lookup watched no CSV (Movies/Series) ---
+def _lookup_local_watched(section: str, title: str, year_val):
+    base = load_table("Movies" if section == "Movies" else "Series").copy()
+    if base.empty:
+        return False, ""
+    base["__t"] = base["title"].astype(str).str.strip().str.casefold()
+    tnorm = (title or "").strip().casefold()
+    ycol = "year" if section == "Movies" else "year_start"
+    mask = base["__t"] == tnorm
+    if ycol in base.columns and year_val not in (None, "", "nan"):
+        try:
+            want_y = int(str(year_val)[:4])
+            base[ycol] = pd.to_numeric(base[ycol], errors="coerce")
+            mask &= (base[ycol] == want_y)
+        except Exception:
+            pass
+    row = base.loc[mask].head(1)
+    if row.empty:
+        return False, ""
+    return bool(row.iloc[0].get("watched", False)), str(row.iloc[0].get("watched_date") or "")
+
+
+# --- NEW: TMDb watch/providers por região (cacheado) ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def _tmdb_watch_providers(media_type: str, tmdb_id: int, region: str) -> str:
+    """
+    media_type: 'movie' | 'tv'
+    devolve providers (flatrate/ads/free/buy/rent) concatenados para a região dada.
+    """
+    if not tmdb_id or not TMDB_API_KEY:
+        return ""
+    url = f"{TMDB_API}/{ 'movie' if media_type=='movie' else 'tv' }/{int(tmdb_id)}/watch/providers"
+    try:
+        r = requests.get(url, params={"api_key": TMDB_API_KEY}, timeout=8)
+        r.raise_for_status()
+        data = r.json() or {}
+        results = data.get("results") or {}
+        region_data = results.get(region) or {}
+
+        names: list[str] = []
+        for key in ("flatrate", "ads", "free", "buy", "rent"):
+            for p in (region_data.get(key) or []):
+                n = p.get("provider_name")
+                if n and n not in names:
+                    names.append(n)
+
+        if not names and region != "US":
+            region_data = results.get("US") or {}
+            for key in ("flatrate", "ads", "free", "buy", "rent"):
+                for p in (region_data.get(key) or []):
+                    n = p.get("provider_name")
+                    if n and n not in names:
+                        names.append(n)
+
+        return ", ".join(names[:4])
+    except Exception:
+        return ""
+
+
+def render_remote_results(section: str, remote: list[dict], query_title: str, region_code: str = "PT") -> None:
     if not remote:
         return
     st.subheader("Online results")
 
     if section not in ("Movies", "Series"):
-        # Soundtracks page simples
+        # Página Soundtracks simples
         df_sp = pd.DataFrame(remote)
         show_cols = [c for c in ["title", "artist", "year", "url"] if c in df_sp.columns]
         st.data_editor(
@@ -32,22 +104,22 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
     if df_remote.empty:
         st.info("No results.")
         return
-
-    # Relevância por título (filtro suave)
+    #-----------------
+    min_req = float(st.session_state.get(key_for(section, "minrating"), 0.0))
+    if "rating" in df_remote.columns and min_req > 0:
+        ratings = pd.to_numeric(df_remote["rating"], errors="coerce").fillna(0.0)
+        df_remote = df_remote[ratings >= min_req].reset_index(drop=True)
+        
+    # Relevância permissiva: só ordena
     if (query_title or "").strip():
         df_remote["__ttl"] = df_remote.get("title", df_remote.get("name", ""))
         df_remote["__score"] = df_remote["__ttl"].apply(lambda s: title_match_score(str(s), query_title))
-        thr = 78 if len(_norm(query_title).split()) >= 2 else 65
         df_remote = (
-            df_remote[df_remote["__score"] >= thr]
+            df_remote
             .sort_values(["__score"], ascending=[False])
             .drop(columns=["__score", "__ttl"], errors="ignore")
             .reset_index(drop=True)
         )
-
-    if df_remote.empty:
-        st.info("No results after relevance filter.")
-        return
 
     year_col = "year" if "year" in df_remote.columns else "year_start"
     if year_col not in df_remote.columns:
@@ -57,7 +129,7 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
     for c in [
         "id","title","name","director","creator","season",
         "genre","genres","streaming","rating","overview",
-        "poster_url","poster","image","tmdb_id",
+        "poster_url","poster","image","tmdb_id","poster_path",
         "web","play_url","notes","notes_text","watched","watched_date",
     ]:
         if c not in df_remote.columns:
@@ -110,10 +182,13 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
         # Header
         ytxt = ""
         if yv not in (None, "", "nan"):
-            try: ytxt = f"{int(float(yv))}"
-            except Exception: ytxt = str(yv)
+            try:
+                ytxt = f"{int(float(yv))}"
+            except Exception:
+                ytxt = str(yv)
         head_bits = [title_i]
-        if ytxt: head_bits.append(f"({ytxt})")
+        if ytxt:
+            head_bits.append(f"({ytxt})")
         if pd.notna(rating) and str(rating).strip().lower() not in ("", "nan"):
             try:
                 rating_val = float(str(rating).replace(",", "."))
@@ -122,8 +197,16 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
                 head_bits.append(f"— ★ {rating}")
         header = " ".join(head_bits).strip()
 
+        # Watched do CSV → badge + sufixo no título
+        w_local, wd_local = _lookup_local_watched(section, title_i, yv)
+        header2 = f"{header} • ✅ Watched" if w_local else header
+
         # Poster
         poster = row.get("poster_url") or row.get("poster") or row.get("image") or ""
+        if not poster:
+            ppath = row.get("poster_path") or ""
+            if ppath:
+                poster = f"https://image.tmdb.org/t/p/w185{ppath}"
         if not poster:
             y_try = None
             try:
@@ -138,21 +221,51 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
                 y_try,
             )
 
+        # Streaming providers para a região escolhida
+        providers_txt = ""
+        tmdb_id_val = row.get("tmdb_id") or row.get("id")
+        try:
+            tid = int(tmdb_id_val) if tmdb_id_val is not None else None
+        except Exception:
+            tid = None
+        if tid:
+            mt = "movie" if section == "Movies" else "tv"
+            providers_txt = _tmdb_watch_providers(mt, tid, region=region_code) or ""
+
+        # Render cartão
         is_open = st.session_state.get(key_for(section, "open_card_id")) == rid
-        with st.expander(header, expanded=is_open):
+        with st.expander(header2, expanded=is_open):
             c_left, c_right = st.columns([1, 0.25], vertical_alignment="top")
 
             with c_left:
                 who = row.get("director") if section == "Movies" else row.get("creator")
                 gl = row.get("genres") or row.get("genre") or ""
                 gl_txt = ", ".join(gl) if isinstance(gl, (list, tuple)) else str(gl)
-                streaming = row.get("streaming") or ""
-                meta_parts = []
-                if who: meta_parts.append(f"**{'Director' if section=='Movies' else 'Creator'}:** {who}")
-                if gl_txt.strip(): meta_parts.append(f"**Genres:** {gl_txt}")
-                if streaming: meta_parts.append(f"**Streaming:** {streaming}")
-                if meta_parts: st.markdown(" • ".join(meta_parts))
+                # usa providers por região se existir; senão, fallback ao campo remoto
+                streaming = providers_txt or (row.get("streaming") or "")
 
+                meta_parts = []
+                if who:
+                    meta_parts.append(f"**{'Director' if section=='Movies' else 'Creator'}:** {who}")
+                if gl_txt.strip():
+                    meta_parts.append(f"**Genres:** {gl_txt}")
+                if streaming:
+                    meta_parts.append(f"**Streaming ({region_code}):** {streaming}")
+                if meta_parts:
+                    st.markdown(" • ".join(meta_parts))
+
+                # Badge “Watched”
+                if w_local:
+                    wd_badge = wd_local[:10] if wd_local else ""
+                    st.markdown(
+                        "<div style='margin:4px 0 8px 0'>"
+                        "<span style='background:#E6F4EA;color:#0B6E3D;padding:2px 8px;"
+                        "border-radius:999px;font-size:0.85rem;'>✓ Watched " + wd_badge + "</span>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                # Artistas + overview
                 artists_txt = artists_from_row_or_fetch(row, section)
                 if artists_txt:
                     st.markdown(f"**Artists:** {artists_txt}")
@@ -160,7 +273,7 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
                 st.markdown("**📖 Overview:**")
                 st.write((row.get("notes_text2") or "").strip() or "—")
 
-                tmdb_id_val = row.get("tmdb_id") or row.get("id")
+                # Botão Play + Player
                 st.button(
                     "🎧 Play soundtrack",
                     key=key_for(section, f"play_{rid}"),
@@ -179,8 +292,8 @@ def render_remote_results(section: str, remote: list[dict], query_title: str) ->
                 # Watched line
                 w_key = key_for(section, f"w_{rid}")
                 d_key = key_for(section, f"wd_{rid}")
-                default_w = bool(row.get("watched"))
-                default_d = parse_date_like(row.get("watched_date"))
+                default_w = w_local if isinstance(w_local, bool) else bool(row.get("watched"))
+                default_d = parse_date_like(wd_local) or parse_date_like(row.get("watched_date"))
 
                 cW, cLbl, cD, cSave = st.columns([0.18, 0.16, 0.28, 0.12])
                 with cW:

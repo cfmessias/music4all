@@ -41,6 +41,11 @@ def apply_filters(section: str, df: pd.DataFrame, filters: dict) -> pd.DataFrame
         if w in ("Yes", "No"):
             m &= df["watched"].fillna(False) == (w == "Yes")
 
+    if section == "Series":
+        w = filters.get("watched")
+        if w in ("Yes", "No"):
+            m &= df["watched"].fillna(False) == (w == "Yes")
+
     mode, val = parse_year_filter(filters.get("year", ""))
     if mode != "none":
         col = "year" if "year" in df.columns else "year_start"
