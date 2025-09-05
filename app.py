@@ -21,7 +21,8 @@ from cinema.artists.page import render_artists_page  # NEW
 # >>> NEW: Radio page (root-level radio.py). If you place it under views/radio/page.py,
 # change this import to:  from views.radio.page import render_radio_page
 from views.radio.radio import render_radio_page
-
+MUSIC_ICON = "🎵\ufe0e"   # note + VS-15 → text style
+CINEMA_ICON = "🎬\ufe0e"  # clapper + VS-15 → text style
 # ---------- Cinema ----------
 def _resolve_cinema_runner():
     try:
@@ -50,12 +51,13 @@ render_cinema = _resolve_cinema_runner()
 # ---------- Page config & header ----------
 
 st.set_page_config(
-    page_title="Music4all",
-    page_icon="🎵",
+    page_title="Multimedia4all",
+    page_icon="🎥",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-st.title("🎵 Music4all")
+#st.title("🎵 🎥 Multimedia4all")
+st.header(f"{MUSIC_ICON}" f"{CINEMA_ICON} Multimedia4all")
 
 # Toggles por baixo do título (disponíveis para o resto da app)
 c_mob, c_ap = st.columns([1, 1])
@@ -71,14 +73,14 @@ st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 # =========================================================
 # Row 1 — domain selector
 # =========================================================
+
 domain = st.radio(
     label="domain",
-    options=["🎵 Music", "🎬 Cinema"],
+    options=[f"{MUSIC_ICON} Music", f"{CINEMA_ICON} Cinema"],
     horizontal=True,
     key="ui_domain",
     label_visibility="collapsed",
 )
-
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 # =========================================================
