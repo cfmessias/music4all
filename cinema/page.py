@@ -145,7 +145,7 @@ def render_cinema_page(section: str = "Movies") -> None:
 
     with r2_c2:
         st.caption("Streaming")
-        watched_sel = st.selectbox(
+        streaming_sel = st.selectbox(
             "", ["All", "Yes", "No"], index=0,
             key=key_for(section, "watched"),
             label_visibility="collapsed",
@@ -178,7 +178,7 @@ def render_cinema_page(section: str = "Movies") -> None:
         local_out, remote = run_search(
             section, df_local,
             title=title, genre=genre, year_txt=year_txt, min_rating=min_rating,
-            author_key=author_key, author_val=author_val, watched_sel=watched_sel,
+            author_key=author_key, author_val=author_val, streaming_sel =streaming_sel,
             online=online,
         )
         st.session_state[key_for(section, "remote_store")] = remote

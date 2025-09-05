@@ -11,6 +11,7 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
 TOKEN = get_spotify_token(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
 
 # ---------- Music pages ----------
+from views.radio.radio import render_radio_page
 from views.spotify.page import render_spotify_page
 from views.wiki_page import render_wikipedia_page
 from views.genres_roots_page import render_genres_page_roots as render_genres_page
@@ -117,7 +118,7 @@ if domain.endswith("Music"):
 
 else:
     
-    cinema_labels = ["🍿 Movies", "📺 Series", "🎼 Soundtracks", "👤 Artists"]  # NEW
+    cinema_labels = ["🍿 Movies", "📺 Series", "🎼 Soundtracks", "👤 Artists"]
     cinema_choice = st.radio(
         label="cinema_submenu",
         options=cinema_labels,
@@ -128,7 +129,9 @@ else:
     section = cinema_choice.split(" ", 1)[1] if " " in cinema_choice else cinema_choice
 
     st.markdown("---")
-    if section == "Artists":           # NEW
+    if section == "Artists":
+        # IMPORTA AQUI, SÓ QUANDO PRECISA
+        from cinema.artists.page import render_artists_page
         render_artists_page()
     else:
         render_cinema(section=section)

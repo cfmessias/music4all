@@ -7,15 +7,16 @@ from cinema.providers.spotify import search_soundtrack_albums
 
 def run_search(section: str, df_local: pd.DataFrame, *,
                title: str, genre: str, year_txt: str, min_rating: float,
-               author_key: str, author_val: str, watched_sel: str | None,
+               author_key: str, author_val: str, streaming_sel: str | None,
                online: bool) -> tuple[pd.DataFrame, list[dict]]:
     filters = {
         "title": title,
         "genre": genre,
         "year": year_txt,
         "min_rating": min_rating,
+        "streaming": streaming_sel,
         author_key: author_val,
-        "watched": watched_sel if section == "Movies" else None,
+        #"watched": watched_sel if section == "Movies" else None,
     }
     local_out = apply_filters(section, df_local, filters)
 
@@ -39,4 +40,21 @@ def run_search(section: str, df_local: pd.DataFrame, *,
             remote = search_soundtrack_albums(
                 title=(title or ""), year_txt=year_txt, artist=(author_val or ""), limit=25
             )
+
+    # Apply streaming filter to remote results if possible
+    try:
+        if streaming_sel in ("Yes", "No") and isinstance(remote, list):
+            want = (streaming_sel == "Yes")
+            def _has_streaming(it):
+                v = it.get("streaming")
+                if v is None:
+                    v = it.get("has_streaming")
+                if v is None:
+                    prov = it.get("watch_providers") or it.get("providers") or {}
+                    v = bool(prov)
+                return bool(v)
+            remote = [r for r in remote if _has_streaming(r) == want]
+    except Exception:
+        pass
     return local_out, remote
+

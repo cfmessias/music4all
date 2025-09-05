@@ -232,13 +232,6 @@ def render_remote_results(section: str, remote: list[dict], query_title: str, re
             mt = "movie" if section == "Movies" else "tv"
             providers_txt = _tmdb_watch_providers(mt, tid, region=region_code) or ""
 
-        # --- Streaming filter for remote results (All/Yes/No) ---
-        _ssel = st.session_state.get(key_for(section, "watched"), "All")
-        _effective_stream = providers_txt or (row.get("streaming") or "")
-        if _ssel == "Yes" and not _effective_stream:
-            continue
-        if _ssel == "No" and _effective_stream:
-            continue
         # Render cartão
         is_open = st.session_state.get(key_for(section, "open_card_id")) == rid
         with st.expander(header2, expanded=is_open):

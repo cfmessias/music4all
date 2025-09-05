@@ -1,4 +1,5 @@
 import pandas as pd
+from pandas.api.types import is_bool_dtype, is_numeric_dtype  # <- novo
 
 def parse_year_filter(txt: str):
     if not txt or not str(txt).strip():
@@ -36,15 +37,22 @@ def apply_filters(section: str, df: pd.DataFrame, filters: dict) -> pd.DataFrame
     if gen and gen != "All":
         m &= df["genre"].fillna("").astype(str).str.strip().str.casefold().eq(str(gen).strip().casefold())
 
-    if section == "Movies":
-        w = filters.get("watched")
-        if w in ("Yes", "No"):
-            m &= df["watched"].fillna(False) == (w == "Yes")
-
-    if section == "Series":
-        w = filters.get("watched")
-        if w in ("Yes", "No"):
-            m &= df["watched"].fillna(False) == (w == "Yes")
+    # ---------- Streaming (robusto a texto/booleano/número) ----------
+    s = filters.get("streaming")
+    if s in ("Yes", "No") and "streaming" in df.columns:
+        col = df["streaming"]
+        # Se for bool -> usa diretamente; se numérico -> != 0; caso contrário -> texto não-vazio
+        if is_bool_dtype(col):
+            has_streaming = col.fillna(False)
+        elif is_numeric_dtype(col):
+            has_streaming = pd.to_numeric(col, errors="coerce").fillna(0) != 0
+        else:
+            txt = col.astype(str).str.strip().str.lower()
+            # considera vazio/negativos comuns como "sem streaming"
+            negatives = {"", "false", "0", "no", "n", "nao", "não", "nan", "nat", "none", "null"}
+            has_streaming = ~txt.isin(negatives)
+        m &= has_streaming if s == "Yes" else ~has_streaming
+    # ---------------------------------------------------------------
 
     mode, val = parse_year_filter(filters.get("year", ""))
     if mode != "none":
@@ -59,19 +67,10 @@ def apply_filters(section: str, df: pd.DataFrame, filters: dict) -> pd.DataFrame
     mr = filters.get("min_rating")
     if mr is not None and mr > 0:
         m &= (pd.to_numeric(df["rating"], errors="coerce") >= mr)
-    # --- Streaming filter (use watched selector for Yes/No) ---
-    ssel = (filters.get("watched") if isinstance(filters, dict) else None) or (filters.get("streaming") if isinstance(filters, dict) else None) or (filters.get("streaming_sel") if isinstance(filters, dict) else None)
-    if ssel in ("Yes", "No") and "streaming" in df.columns:
-        present = df["streaming"].astype(str).str.strip().ne("")
-        if ssel == "Yes":
-            m &= present
-        else:
-            m &= (~present)
 
-
-        out = df[m].copy()
-        if "rating" in out.columns:
-            out = out.sort_values(by=["rating","title"], ascending=[False,True], na_position="last")
-        else:
-            out = out.sort_values(by=["title"], ascending=True)
-        return out
+    out = df[m].copy()
+    if "rating" in out.columns:
+        out = out.sort_values(by=["rating","title"], ascending=[False,True], na_position="last")
+    else:
+        out = out.sort_values(by=["title"], ascending=True)
+    return out
