@@ -57,8 +57,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 #st.title("🎵 🎥 Multimedia4all")
-st.header(f"{MUSIC_ICON}" f"{CINEMA_ICON} Multimedia4all")
-
+#st.header(f"{MUSIC_ICON}" f"{CINEMA_ICON} Multimedia4all")
+st.markdown(f"#### {MUSIC_ICON} {CINEMA_ICON} Multimedia4all")   # “####” < “###” < “##”
 # Toggles por baixo do título (disponíveis para o resto da app)
 c_mob, c_ap = st.columns([1, 1])
 with c_mob:
