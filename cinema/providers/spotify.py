@@ -210,6 +210,118 @@ def _score_album_like(name: str, title: str, ref_year: Optional[int], media_kind
         year_pen + hint_bonus + kind_bonus + token_pen + va_bonus
     )
 
+
+# ---------------- Theme track scoring (fallback) ----------------
+def _score_theme_track(trk: dict, title: str, ref_year: Optional[int],
+                       hint_artists: Optional[List[str]] = None) -> float:
+    """Scoring simples para faixas que sejam 'Theme' do título indicado."""
+    try:
+        from rapidfuzz import fuzz
+    except Exception:
+        # fallback mínimo
+        fuzz = None
+
+    name = (trk.get("name") or "").strip()
+    album = trk.get("album", {}) or {}
+    album_name = (album.get("name") or "").strip()
+    rel_year = _year_from_date(album.get("release_date") or "")
+
+    base = 0.0
+    if fuzz:
+        # combinar com variantes do título
+        variants = _title_variants(title)
+        base = max(fuzz.token_set_ratio(name, v) for v in variants) * 0.6
+        base = float(base)
+    else:
+        base = 50.0 if title.lower() in (name + " " + album_name).lower() else 0.0
+
+    nlow = name.lower()
+    alow = album_name.lower()
+
+    # Bónus por palavras-chave de "tema"
+    theme_bonus = 0.0
+    if "theme" in nlow:
+        theme_bonus += 25.0
+    if any(k in nlow for k in ["main theme", "opening theme", "ending theme"]):
+        theme_bonus += 10.0
+
+    # Título no álbum/na faixa
+    title_bonus = 0.0
+    t = title.lower()
+    if t in alow:
+        title_bonus += 15.0
+    if t in nlow:
+        title_bonus += 10.0
+
+    # Proximidade do ano
+    year_bonus = 0.0
+    if ref_year and rel_year:
+        year_bonus += max(0.0, 10.0 - 3.0 * abs(ref_year - rel_year))
+
+    # Artistas sugeridos
+    hint_bonus = 0.0
+    if hint_artists:
+        names = " ".join(a.get("name","") for a in trk.get("artists", []) if a)
+        if any(h.lower() in names.lower() for h in hint_artists if h):
+            hint_bonus += 6.0
+
+    return float(base + theme_bonus + title_bonus + year_bonus + hint_bonus)
+
+
+def search_theme_tracks(title: str, year_txt: str = "", artist: str = "", limit: int = 10,
+                        media_kind: str = "movie",
+                        hint_artists: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Procura faixas de 'Theme' para o título indicado, como fallback quando não há OST."""
+    sp = _sp_client()
+    if not title:
+        return []
+
+    ref_year = _safe_year(year_txt)
+    variants = _title_variants(title)
+    # Queries orientadas a "theme"
+    base_qs = []
+    for v in variants:
+        base_qs += [
+            f'track:"{v}" theme',
+            f'track:"{v}" "main theme"',
+        ]
+        if media_kind.lower().startswith("tv"):
+            base_qs += [
+                f'track:"{v}" "opening theme"',
+                f'track:"{v}" "ending theme"',
+            ]
+
+    # pesquisar com/sem market
+    items: List[dict] = []
+    seen = set()
+    for q in base_qs:
+        for mk in (SPOTIFY_MARKET, None):
+            try:
+                res = _search_sp(sp, q, "track", limit, mk)
+            except Exception:
+                res = []
+            for trk in res or []:
+                tid = trk.get("id")
+                if not tid or tid in seen:
+                    continue
+                seen.add(tid)
+                items.append(trk)
+
+    # pontuar e ordenar
+    scored = [(_score_theme_track(trk, title, ref_year, hint_artists), trk) for trk in items]
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    out: List[Dict[str, Any]] = [{
+        "title": trk.get("name") or "",
+        "artist": " ".join(a.get("name","") for a in trk.get("artists", []) if a.get("name")),
+        "year": _year_from_date((trk.get("album") or {}).get("release_date") or "") or "",
+        "url": (trk.get("external_urls") or {}).get("spotify") or "",
+        "uri": trk.get("uri") or "",
+        "_score": float(sc),
+        "_kind": "track",
+    } for sc, trk in scored[:limit]]
+
+    return out
 # ---------------- Queries ----------------
 def _build_queries(title: str, ref_year: Optional[int], media_kind: str,
                    hint_artists: Optional[List[str]]) -> List[str]:

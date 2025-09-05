@@ -292,6 +292,9 @@ def render_artists_page() -> None:
             return
 
         # Filtros simples
+        # Streaming filter (All / Yes / No)
+        st.caption("Streaming")
+        art_streaming = st.selectbox("", ["All","Yes","No"], index=0, key="art_streaming", label_visibility="collapsed")
         f1, f2, f3, f4 = st.columns([1, 1, 1, 1])  # CHANGED: +1 col para país
         kind = f1.selectbox("Type", ["All", "Movie", "Series"], key="art_type")
         dept_choice = f2.selectbox("Department", ["All", "Cast (role)", "Crew (job)"], key="art_dept")
@@ -361,6 +364,12 @@ def render_artists_page() -> None:
 
         page_rows["streaming"] = page_rows.apply(_stream_for_row, axis=1)
 
+                
+        # Apply artist streaming filter
+        if st.session_state.get("art_streaming","All") == "Yes":
+            page_rows = page_rows[page_rows["streaming"].astype(str).str.strip() != ""].copy()
+        elif st.session_state.get("art_streaming","All") == "No":
+            page_rows = page_rows[page_rows["streaming"].astype(str).str.strip() == ""].copy()
         # Apresentação (rating 1 casa decimal)
         cols_show = ["type", "title", "year", "streaming", "role", "job", "rating"]
         for c in cols_show:

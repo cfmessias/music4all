@@ -144,7 +144,7 @@ def render_cinema_page(section: str = "Movies") -> None:
         )
 
     with r2_c2:
-        st.caption("Watched")
+        st.caption("Streaming")
         watched_sel = st.selectbox(
             "", ["All", "Yes", "No"], index=0,
             key=key_for(section, "watched"),

@@ -59,10 +59,19 @@ def apply_filters(section: str, df: pd.DataFrame, filters: dict) -> pd.DataFrame
     mr = filters.get("min_rating")
     if mr is not None and mr > 0:
         m &= (pd.to_numeric(df["rating"], errors="coerce") >= mr)
+    # --- Streaming filter (use watched selector for Yes/No) ---
+    ssel = (filters.get("watched") if isinstance(filters, dict) else None) or (filters.get("streaming") if isinstance(filters, dict) else None) or (filters.get("streaming_sel") if isinstance(filters, dict) else None)
+    if ssel in ("Yes", "No") and "streaming" in df.columns:
+        present = df["streaming"].astype(str).str.strip().ne("")
+        if ssel == "Yes":
+            m &= present
+        else:
+            m &= (~present)
 
-    out = df[m].copy()
-    if "rating" in out.columns:
-        out = out.sort_values(by=["rating","title"], ascending=[False,True], na_position="last")
-    else:
-        out = out.sort_values(by=["title"], ascending=True)
-    return out
+
+        out = df[m].copy()
+        if "rating" in out.columns:
+            out = out.sort_values(by=["rating","title"], ascending=[False,True], na_position="last")
+        else:
+            out = out.sort_values(by=["title"], ascending=True)
+        return out

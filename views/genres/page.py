@@ -77,7 +77,30 @@ def render_genres_page_roots():
         st.error(str(e)); return
     children_idx, leaves_idx, roots, leaf_url = build_indices_cached(df)
 
-    # ---------- Primeira linha: select root + search ----------
+    # ---------- Primeira linha: botões ----------
+    b1, b2 = st.columns([1, 1])
+    with b1:
+        if st.button("🔎 Search", key="genres_top_search"):
+            q = (st.session_state.get("genres_search_q") or "").strip()
+            if not q:
+                st.warning("Type something to search.")
+            else:
+                all_paths, _ = flatten_all_paths(df)
+                hits = search_paths(all_paths, q, max_results=300)
+                st.session_state["genres_search_results"] = {"query": q, "hits": hits}
+                st.session_state["genres_search_page"] = 1
+    with b2:
+        if st.button("🧹 Reset filters", key="genres_top_reset"):
+            st.session_state.pop("genres_search_q", None)
+            st.session_state.pop("genres_search_results", None)
+            st.session_state.pop("genres_search_page", None)
+            st.session_state["genres_path"] = []
+            # limpa restos spotify
+            for k in list(st.session_state.keys()):
+                if k.endswith(("_artists", "_playlists")) or k.startswith(("sr_spotify", "list_spotify")):
+                    st.session_state.pop(k, None)
+
+    # ---------- Segunda linha: select root + search ----------
     root_list = sorted([r for r in (roots or set()) if r], key=str.lower)
     if "genres_path" not in st.session_state:
         st.session_state["genres_path"] = []
@@ -96,29 +119,6 @@ def render_genres_page_roots():
     with c_search:
         st.text_input("Search", key="genres_search_q", label_visibility="collapsed",
                       placeholder="Search genre/path (e.g., Art Rock or Rock / Progressive)")
-
-    # ---------- Segunda linha: botões ----------
-    b1, b2 = st.columns([1, 1])
-    with b1:
-        if st.button("🔎 Search", key="genres_top_search"):
-            q = (st.session_state.get("genres_search_q") or "").strip()
-            if not q:
-                st.warning("Type something to search.")
-            else:
-                all_paths, _ = flatten_all_paths(df)
-                hits = search_paths(all_paths, q, max_results=300)
-                st.session_state["genres_search_results"] = {"query": q, "hits": hits}
-                st.session_state["genres_search_page"] = 1
-    with b2:
-        if st.button("🧹 Reset", key="genres_top_reset"):
-            st.session_state.pop("genres_search_q", None)
-            st.session_state.pop("genres_search_results", None)
-            st.session_state.pop("genres_search_page", None)
-            st.session_state["genres_path"] = []
-            # limpa restos spotify
-            for k in list(st.session_state.keys()):
-                if k.endswith(("_artists", "_playlists")) or k.startswith(("sr_spotify", "list_spotify")):
-                    st.session_state.pop(k, None)
 
     st.divider()
 
@@ -260,7 +260,7 @@ def render_genres_page_roots():
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---------------------- DIREITA: resumo + relations + grafo ----------------------
+    # ---------------------- DIREITA: resumo + relations + gráfico ----------------------
     with colR:
         root_genre = path[0]     # selecionado na selectbox
         focus      = path[-1]    # último nó clicado
@@ -329,18 +329,18 @@ def render_genres_page_roots():
                 index=0,
                 key="chart_opts",
             )
-            gh, fs = 520, 15
+            gh, fs = 680, 15
             if preset == "Compact":
                 gh, fs = 420, 13
             elif preset == "Large labels":
                 gh, fs = 560, 18
             elif preset == "Tall chart":
-                gh, fs = 680, 15
+                gh, fs = 700, 15
             elif preset == "Custom":
                 gh = st.slider("Height (px)", 300, 900, 520, 20, key="g_height")
                 fs = st.slider("Label size", 10, 22, 15, 1, key="g_font")
 
-        # Dados do grafo
+        # Dados do gráfico
         adj = build_label_adjacency(children_idx)
 
         MAX_FIRST_LEVEL = 30
